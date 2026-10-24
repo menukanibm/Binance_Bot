@@ -1,10 +1,11 @@
 /**
  * Production Credentials and Global Configuration
  * All sensitive values are strictly read from environment variables (.env).
+ * Secrets are kept out of source code for security.
  */
 
 export const CONFIG = {
-  // Supabase Project
+  // Supabase Project Configuration
   SUPABASE_URL:
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
     process.env.SUPABASE_URL ||
@@ -17,7 +18,7 @@ export const CONFIG = {
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     '',
 
-  // Google Gemini API Key
+  // Google Gemini AI API Credentials
   GEMINI_API_KEY:
     process.env.GEMINI_API_KEY ||
     '',
@@ -39,3 +40,5 @@ export const CONFIG = {
     : 10,
   MARGIN_MODE: 'ISOLATED' as const,
 };
+
+export default CONFIG;
