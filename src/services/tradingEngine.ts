@@ -6,6 +6,8 @@ import {
   updateTradeInSupabase,
   saveSignalToSupabase,
   fetchTradesFromSupabase,
+  deleteUnexecutedSignalsFromSupabase,
+  deleteAllHistoryKeepOpenPositionsFromSupabase,
 } from './supabaseClient';
 import {
   Position,
@@ -34,6 +36,8 @@ class TradingEngine {
     defaultTpPercent: 2.0,
     binanceApiKey: CONFIG.BINANCE_API_KEY,
     binanceApiSecret: CONFIG.BINANCE_SECRET_KEY,
+    maxTotalMarginPct: CONFIG.MAX_TOTAL_MARGIN_PCT || 10,
+    marginMode: 'ISOLATED',
   };
 
   private status: BotStatus = {
@@ -52,6 +56,11 @@ class TradingEngine {
     winRate: 0,
     netPnl: 0,
     accountBalance: 0, // Real balance strictly initialized to 0.00 (no mock fallback)
+    freeUsdt: 0,
+    totalActiveMarginUsdt: 0,
+    totalActiveMarginPercent: 0,
+    maxTotalMarginPct: CONFIG.MAX_TOTAL_MARGIN_PCT || 10,
+    marginMode: 'ISOLATED',
     tradingMode: CONFIG.BINANCE_TESTNET ? 'TESTNET' : 'LIVE',
     geminiModel: 'gemini-3.8-flash',
     geminiThreshold: 80,
@@ -96,18 +105,45 @@ class TradingEngine {
     this.startEngine();
   }
 
+  /**
+   * Calculate Total Active Margin across all currently open trades
+   */
+  public calculateTotalActiveMargin(): { totalMarginUsdt: number; positionsCount: number } {
+    const openPositions = this.positions.filter((p) => p.status === 'OPEN');
+    const totalMarginUsdt = openPositions.reduce((sum, p) => {
+      const margin = p.marginUsed > 0 ? p.marginUsed : (p.entryPrice * p.quantity) / (p.leverage || 10);
+      return sum + margin;
+    }, 0);
+    return {
+      totalMarginUsdt: Math.round(totalMarginUsdt * 100) / 100,
+      positionsCount: openPositions.length,
+    };
+  }
+
   public async refreshAccountBalance(): Promise<number> {
     try {
       const balance = await binanceCcxt.fetchAccountBalance();
       this.status.accountBalance = Number(balance.totalUsdt) || 0;
+      this.status.freeUsdt = Number(balance.freeUsdt) || 0;
+
+      const { totalMarginUsdt } = this.calculateTotalActiveMargin();
+      this.status.totalActiveMarginUsdt = totalMarginUsdt;
+      this.status.totalActiveMarginPercent = this.status.accountBalance > 0
+        ? Math.round((totalMarginUsdt / this.status.accountBalance) * 10000) / 100
+        : 0;
+
       if (this.status.accountBalance > 0) {
-        this.addLog(`Live Binance USD-M Wallet: $${this.status.accountBalance.toFixed(2)} USDT (Free: $${balance.freeUsdt.toFixed(2)})`, 'success');
+        this.addLog(
+          `Live Binance USD-M Wallet: $${this.status.accountBalance.toFixed(2)} USDT (Free: $${this.status.freeUsdt.toFixed(2)}, Active Margin: $${totalMarginUsdt.toFixed(2)} [${this.status.totalActiveMarginPercent.toFixed(1)}%])`,
+          'success'
+        );
       } else {
         this.addLog(`Live Binance USD-M Wallet: $0.00 USDT (Connected via CCXT)`, 'info');
       }
       return this.status.accountBalance;
     } catch (err: any) {
       this.status.accountBalance = 0;
+      this.status.freeUsdt = 0;
       return 0;
     }
   }
@@ -199,8 +235,8 @@ class TradingEngine {
               // Perform Smart Money Concepts & Divergence Analysis
               const analysis = analyzeSMC(sym, candles);
 
-              // High-confluence zone detected?
-              if (analysis.confluenceScore >= 60 && analysis.bias !== 'NEUTRAL') {
+              // High-confluence zone detected (Confluence >= 70%)
+              if (analysis.confluenceScore >= 70 && analysis.bias !== 'NEUTRAL') {
                 const actionSide = analysis.bias === 'LONG' ? 'BUY' : 'SELL';
 
                 // Broadcast upcoming signal to UI
@@ -321,14 +357,80 @@ class TradingEngine {
     const targetEntryPrice = inEntryZone ? livePrice : signal.price;
 
     // 3. Dynamic Position Sizing based on risk % and leverage
-    const riskAmount = (this.status.accountBalance * this.settings.riskPercentage) / 100;
+    const balanceInfo = await binanceCcxt.fetchAccountBalance();
+    const totalUsdt = balanceInfo.totalUsdt > 0 ? balanceInfo.totalUsdt : this.status.accountBalance;
+    const freeUsdt = balanceInfo.freeUsdt;
+    this.status.accountBalance = totalUsdt;
+    this.status.freeUsdt = freeUsdt;
+
+    const riskPct = this.settings.riskPercentage || 2;
+    const baseEquity = totalUsdt > 0 ? totalUsdt : 100;
+    const riskAmount = (baseEquity * riskPct) / 100;
     const slDiff = Math.abs(targetEntryPrice - signal.stopLoss) || targetEntryPrice * 0.01;
     let qty = (riskAmount / slDiff) * (this.settings.leverage / 10);
     qty = Math.max(minQty, Math.round(qty * 1000) / 1000);
 
-    const marginUsed = (targetEntryPrice * qty) / this.settings.leverage;
+    const newPositionMargin = (targetEntryPrice * qty) / this.settings.leverage;
 
-    // 4. Execute Real Order on Binance Futures via CCXT (with Dynamic 1% SL & 2% TP brackets)
+    // 4. Calculate Total Active Margin across all currently open trades
+    const { totalMarginUsdt: currentActiveMargin, positionsCount: openPositionsCount } = this.calculateTotalActiveMargin();
+    const currentActiveMarginPct = totalUsdt > 0 ? (currentActiveMargin / totalUsdt) * 100 : 0;
+    const maxMarginCapPct = Number(this.settings.maxTotalMarginPct) || CONFIG.MAX_TOTAL_MARGIN_PCT || 10;
+    const projectedTotalMargin = currentActiveMargin + newPositionMargin;
+    const projectedMarginPct = totalUsdt > 0 ? (projectedTotalMargin / totalUsdt) * 100 : 100;
+
+    console.log(
+      `[RISK EVALUATION] Signal ${signal.side} ${signal.symbol}: ` +
+      `Total Balance: $${totalUsdt.toFixed(2)} USDT, Available Free USDT: $${freeUsdt.toFixed(2)} USDT | ` +
+      `Active Margin: $${currentActiveMargin.toFixed(2)} USDT (${currentActiveMarginPct.toFixed(2)}% in ${openPositionsCount} positions) | ` +
+      `New Position Margin: $${newPositionMargin.toFixed(2)} USDT | ` +
+      `Projected Total Margin: $${projectedTotalMargin.toFixed(2)} USDT (${projectedMarginPct.toFixed(2)}%) | ` +
+      `Configured Cap: ${maxMarginCapPct}% | Margin Mode: ISOLATED`
+    );
+
+    // 5. Insufficient Balance Handling: Check available USDT balance before placing order
+    if (freeUsdt < newPositionMargin || totalUsdt <= 0) {
+      console.warn(
+        `Insufficient USDT balance to open trade. Available USDT: $${freeUsdt.toFixed(2)}, Required Margin: $${newPositionMargin.toFixed(2)}, Total Active Margin: ${currentActiveMarginPct.toFixed(2)}% ($${currentActiveMargin.toFixed(2)} USDT). Trade rejected for ${signal.symbol}.`
+      );
+      this.addLog(
+        `Insufficient USDT balance to open trade. Available: $${freeUsdt.toFixed(2)} USDT, Required Margin: $${newPositionMargin.toFixed(2)} USDT. Active Margin: ${currentActiveMarginPct.toFixed(2)}%`,
+        'warn'
+      );
+      signal.status = 'REJECTED';
+      return;
+    }
+
+    // 6. Enforce Max Margin Cap (Configurable, default 10%)
+    if (projectedMarginPct > maxMarginCapPct) {
+      console.warn(
+        `[RISK REJECTED] Total active margin (${projectedMarginPct.toFixed(2)}%) exceeds configured cap of ${maxMarginCapPct}%. ` +
+        `Available USDT: $${freeUsdt.toFixed(2)}, Active Margin: $${currentActiveMargin.toFixed(2)} USDT (${currentActiveMarginPct.toFixed(2)}%), ` +
+        `New Position Margin: $${newPositionMargin.toFixed(2)} USDT, Total Balance: $${totalUsdt.toFixed(2)} USDT. Trade rejected for ${signal.symbol}.`
+      );
+      this.addLog(
+        `[RISK REJECTED] Total active margin (${projectedMarginPct.toFixed(2)}%) exceeds configured cap of ${maxMarginCapPct}%. Available USDT: $${freeUsdt.toFixed(2)}, Active Margin: $${currentActiveMargin.toFixed(2)} USDT. Trade rejected for ${signal.symbol}.`,
+        'warn'
+      );
+      signal.status = 'REJECTED';
+      return;
+    }
+
+    // 7. Enforce Strictly ISOLATED Margin Mode Only (Reject Cross Margin)
+    const isolatedCheck = await binanceCcxt.ensureIsolatedMargin(signal.symbol);
+    if (!isolatedCheck.success) {
+      console.error(
+        `[RISK REJECTED] Failed to enforce ISOLATED margin mode for ${signal.symbol}: ${isolatedCheck.message}. Cross margin is strictly prohibited to avoid account liquidation risks.`
+      );
+      this.addLog(
+        `[RISK REJECTED] Failed to enforce ISOLATED margin mode for ${signal.symbol}. Cross margin mode is strictly prohibited.`,
+        'warn'
+      );
+      signal.status = 'REJECTED';
+      return;
+    }
+
+    // 8. Execute Real Order on Binance Futures via CCXT (with Dynamic 1% SL & 2% TP brackets)
     let executionResult;
     try {
       executionResult = await binanceCcxt.placeRealFuturesOrder({
@@ -347,7 +449,7 @@ class TradingEngine {
 
     const fillPrice = executionResult.executedPrice || targetEntryPrice;
 
-    // 5. Create Position record with status OPEN
+    // 9. Create Position record with status OPEN and marginMode: ISOLATED
     const newPosition: Position = {
       id: `pos_${Date.now()}_${signal.symbol}`,
       symbol: signal.symbol,
@@ -360,7 +462,8 @@ class TradingEngine {
       unrealizedPnl: 0,
       unrealizedPnlPercent: 0,
       leverage: this.settings.leverage,
-      marginUsed,
+      marginUsed: newPositionMargin,
+      marginMode: 'ISOLATED',
       openedAt: Date.now(),
       status: 'OPEN',
       signalId: signal.id,
@@ -370,11 +473,18 @@ class TradingEngine {
     this.positions.unshift(newPosition);
     signal.status = 'EXECUTED';
 
-    // 6. Save directly to Supabase with status OPEN
+    // 10. Save directly to Supabase with status OPEN
     await saveTradeToSupabase(newPosition, executionResult);
 
+    console.log(
+      `[TRADE EXECUTED] ${signal.side} ${qty} ${signal.symbol} @ $${fillPrice.toFixed(2)} [ISOLATED]. ` +
+      `Allocated Margin: $${newPositionMargin.toFixed(2)} USDT. ` +
+      `Total Active Margin: $${(currentActiveMargin + newPositionMargin).toFixed(2)} USDT (${projectedMarginPct.toFixed(2)}% / ${maxMarginCapPct}% cap). ` +
+      `Available USDT remaining: $${Math.max(0, freeUsdt - newPositionMargin).toFixed(2)} USDT.`
+    );
+
     this.addLog(
-      `REAL TRADE EXECUTED on Binance Futures: ${signal.side} ${qty} ${signal.symbol} @ $${fillPrice.toFixed(2)} [SL: $${signal.stopLoss.toFixed(2)} | TP: $${signal.takeProfit.toFixed(2)}] (Saved to Supabase: OPEN)`,
+      `${executionResult.isSimulated ? 'PAPER/SIMULATED' : 'REAL BINANCE'} TRADE EXECUTED: ${signal.side} ${qty} ${signal.symbol} @ $${fillPrice.toFixed(2)} [ISOLATED | SL: $${signal.stopLoss.toFixed(2)} | TP: $${signal.takeProfit.toFixed(2)}] (Active Margin: ${projectedMarginPct.toFixed(1)}% / ${maxMarginCapPct}% cap)`,
       'trade'
     );
 
@@ -563,12 +673,20 @@ class TradingEngine {
     const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
     const netPnl = closed.reduce((acc, p) => acc + (p.realizedPnl || 0), 0);
 
+    const { totalMarginUsdt } = this.calculateTotalActiveMargin();
+
     this.status.activePositionsCount = open.length;
     this.status.totalTrades = totalTrades;
     this.status.totalWins = wins;
     this.status.totalLosses = losses;
     this.status.winRate = winRate;
     this.status.netPnl = Math.round(netPnl * 100) / 100;
+    this.status.totalActiveMarginUsdt = totalMarginUsdt;
+    this.status.totalActiveMarginPercent = this.status.accountBalance > 0
+      ? Math.round((totalMarginUsdt / this.status.accountBalance) * 10000) / 100
+      : 0;
+    this.status.maxTotalMarginPct = this.settings.maxTotalMarginPct;
+    this.status.marginMode = 'ISOLATED';
   }
 
   public addLog(message: string, type: 'info' | 'success' | 'warn' | 'trade' = 'info') {
@@ -587,6 +705,12 @@ class TradingEngine {
 
   public updateSettings(newSettings: Partial<BotSettings>) {
     this.settings = { ...this.settings, ...newSettings };
+    if (newSettings.maxTotalMarginPct !== undefined) {
+      this.settings.maxTotalMarginPct = Number(newSettings.maxTotalMarginPct);
+      this.status.maxTotalMarginPct = this.settings.maxTotalMarginPct;
+    }
+    this.settings.marginMode = 'ISOLATED'; // Strictly ISOLATED only
+    this.status.marginMode = 'ISOLATED';
     this.status.tradingMode = this.settings.tradingMode;
     this.status.geminiThreshold = this.settings.geminiThreshold;
     binanceCcxt.setCredentials(
@@ -611,6 +735,104 @@ class TradingEngine {
   public getAllPairs(): CcxtPairInfo[] {
     return [...this.allUsdmPairs];
   }
+
+  /**
+   * Option 1: Clear Unexecuted Signals/Analysis Only (Safe Mode)
+   * Deletes all signals that did not turn into active trades and resets past engine logs.
+   * STRICT SAFETY GUARD: All currently OPEN positions and their SL/TP tracking remain completely untouched.
+   */
+  public async clearUnexecutedSignalsAndLogs(): Promise<{
+    success: boolean;
+    clearedSignalsCount: number;
+    clearedLogsCount: number;
+    openPositionsPreserved: number;
+  }> {
+    // 1. Identify open positions to ensure safety
+    const openPositions = this.positions.filter((p) => p.status === 'OPEN');
+    const openSignalIds = new Set(
+      openPositions.map((p) => p.signalId).filter((id): id is string => !!id)
+    );
+
+    const initialSignalsCount = this.signals.length;
+    // Retain only signals that actually turned into active trades or match open trades
+    this.signals = this.signals.filter(
+      (s) => s.status === 'EXECUTED' || openSignalIds.has(s.id)
+    );
+    const clearedSignalsCount = initialSignalsCount - this.signals.length;
+
+    const clearedLogsCount = this.scanLogs.length;
+    this.scanLogs = [];
+
+    this.addLog(
+      `[Safe Mode Cleanup] Cleared ${clearedSignalsCount} unexecuted signals and ${clearedLogsCount} past logs. All ${openPositions.length} active OPEN trades strictly preserved.`,
+      'info'
+    );
+
+    // 2. Execute deletion on Supabase database
+    await deleteUnexecutedSignalsFromSupabase();
+
+    // 3. Recalculate stats
+    this.updateStats();
+
+    return {
+      success: true,
+      clearedSignalsCount,
+      clearedLogsCount,
+      openPositionsPreserved: openPositions.length,
+    };
+  }
+
+  /**
+   * Option 2: Clear All History (Keep Active Positions)
+   * Wipes out past logs, closed trade history, and previous analysis from Supabase and UI.
+   * STRICT SAFETY GUARD: Active OPEN positions are NEVER deleted or disconnected from SL/TP tracking.
+   */
+  public async clearAllHistoryKeepOpenPositions(): Promise<{
+    success: boolean;
+    clearedClosedTradesCount: number;
+    clearedSignalsCount: number;
+    clearedLogsCount: number;
+    openPositionsPreserved: number;
+  }> {
+    // 1. HARDCODED SAFETY GUARD: Strictly isolate and preserve all OPEN positions
+    const openPositions = this.positions.filter((p) => p.status === 'OPEN');
+    const openSignalIds = openPositions
+      .map((p) => p.signalId)
+      .filter((id): id is string => !!id);
+
+    const closedTradesCount = this.positions.filter((p) => p.status !== 'OPEN').length;
+    const initialSignalsCount = this.signals.length;
+    const initialLogsCount = this.scanLogs.length;
+
+    // 2. In-memory cleanup: Retain ONLY active OPEN positions
+    this.positions = [...openPositions];
+
+    // 3. Retain only signals attached to open positions
+    this.signals = this.signals.filter((s) => s.id && openSignalIds.includes(s.id));
+    const clearedSignalsCount = initialSignalsCount - this.signals.length;
+
+    // 4. Reset logs
+    this.scanLogs = [];
+    this.addLog(
+      `[History Cleanup] Cleared ${closedTradesCount} closed trades, ${clearedSignalsCount} historical signals, and ${initialLogsCount} logs. All ${openPositions.length} active OPEN trades strictly preserved.`,
+      'info'
+    );
+
+    // 5. Execute Supabase cleanup
+    await deleteAllHistoryKeepOpenPositionsFromSupabase(openSignalIds);
+
+    // 6. Recalculate stats
+    this.updateStats();
+
+    return {
+      success: true,
+      clearedClosedTradesCount: closedTradesCount,
+      clearedSignalsCount,
+      clearedLogsCount: initialLogsCount,
+      openPositionsPreserved: openPositions.length,
+    };
+  }
 }
 
 export const tradingEngine = new TradingEngine();
+

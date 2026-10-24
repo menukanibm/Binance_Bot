@@ -23,12 +23,14 @@ interface SupabaseStatus {
   hasSettingsTable?: boolean;
   error?: string;
   schema?: string;
+  quickFixSql?: string;
 }
 
 export const RequirementsAudit: React.FC = () => {
   const [dbStatus, setDbStatus] = useState<SupabaseStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [copiedQuickFix, setCopiedQuickFix] = useState(false);
 
   const fetchStatus = async () => {
     setLoading(true);
@@ -37,7 +39,7 @@ export const RequirementsAudit: React.FC = () => {
       const data = await res.json();
       setDbStatus(data);
     } catch (err) {
-      console.warn('Failed to fetch db status:', err);
+      console.log('Database status refresh note:', err);
     } finally {
       setLoading(false);
     }
@@ -52,6 +54,14 @@ export const RequirementsAudit: React.FC = () => {
       navigator.clipboard.writeText(dbStatus.schema);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyQuickFix = () => {
+    if (dbStatus?.quickFixSql) {
+      navigator.clipboard.writeText(dbStatus.quickFixSql);
+      setCopiedQuickFix(true);
+      setTimeout(() => setCopiedQuickFix(false), 2000);
     }
   };
 
@@ -195,32 +205,57 @@ export const RequirementsAudit: React.FC = () => {
             </div>
           </div>
 
-          {/* Copyable SQL Migration Script */}
+          {/* Quick Permissions Fix (Instant 3-Line SQL) */}
+          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <ShieldAlert className="w-4 h-4 text-amber-400" />
+                <span className="text-xs font-bold text-amber-300">
+                  Quick Permissions Fix (Fixes 'permission denied for table trades')
+                </span>
+              </div>
+              <button
+                onClick={handleCopyQuickFix}
+                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-bold rounded-lg transition flex items-center gap-1 shadow"
+              >
+                {copiedQuickFix ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedQuickFix ? 'Copied Quick Fix!' : 'Copy Quick Fix SQL'}</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              If Supabase returns <em>permission denied for table trades</em>, paste this 3-line grant command into Supabase SQL Editor:
+            </p>
+            <pre className="p-2.5 bg-slate-950 border border-amber-500/20 rounded-lg text-[10px] font-mono text-amber-300 max-h-[85px] overflow-y-auto">
+              {dbStatus?.quickFixSql || `GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;\nGRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;\nGRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;\nGRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;\nALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;\n\nDROP POLICY IF EXISTS "anon_full_access_trades" ON public.trades;\nCREATE POLICY "anon_full_access_trades" ON public.trades FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);`}
+            </pre>
+          </div>
+
+          {/* Copyable Full SQL Migration Script */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-300">
-                Required Supabase SQL Migration Script
+                Complete Supabase SQL Migration Script (All 4 Tables)
               </span>
               <button
                 onClick={handleCopySql}
                 className="text-[11px] text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition"
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copied ? 'Copied SQL!' : 'Copy SQL Script'}</span>
+                <span>{copied ? 'Copied Full SQL!' : 'Copy Full SQL Script'}</span>
               </button>
             </div>
 
-            <pre className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-[11px] font-mono text-emerald-400 max-h-[160px] overflow-y-auto">
+            <pre className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-[11px] font-mono text-emerald-400 max-h-[140px] overflow-y-auto">
               {dbStatus?.schema}
             </pre>
 
             <a
-              href="https://supabase.com/dashboard/project/geoamvgfucsnegxkktg/sql"
+              href="https://supabase.com/dashboard/project/geoamvgfucsnegxkkktg/sql"
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:underline font-semibold"
             >
-              <span>Open Supabase SQL Editor in Browser</span>
+              <span>Open Supabase SQL Editor in Browser (geoamvgfucsnegxkkktg)</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
           </div>
@@ -301,6 +336,48 @@ export const RequirementsAudit: React.FC = () => {
               </div>
               <p className="text-slate-400 text-[11px]">
                 Select <em>"Unrestricted (Less Secure)"</em> or add your hosting IP to the trusted IP list on Binance.
+              </p>
+            </div>
+
+            {/* Requirement 5: Strict Risk Management & Margin Cap */}
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-1">
+              <div className="flex items-center justify-between font-bold text-white">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  5. Strict Risk Management & Margin Rules
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">ENFORCED</span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Total Active Margin is tracked across all open positions. Trades exceeding <code className="text-amber-400">MAX_TOTAL_MARGIN_PCT</code> (10% default) or when free USDT is insufficient are rejected with console alert logs. All trades strictly use <code className="text-emerald-400">ISOLATED</code> margin.
+              </p>
+            </div>
+
+            {/* Requirement 6: Database Storage & Historical Data Cleanup */}
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-1">
+              <div className="flex items-center justify-between font-bold text-white">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  6. Supabase Storage & Historical Data Cleanup
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">ACTIVE WITH GUARD</span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Supports <strong>Option 1 (Safe Mode)</strong> to delete unexecuted signals and logs, and <strong>Option 2 (All History)</strong> to purge closed trades, signals, and logs. Active <code className="text-emerald-400">OPEN</code> positions are guarded by hardcoded assertions in code and database queries so their SL/TP tracking is never broken.
+              </p>
+            </div>
+
+            {/* Requirement 7: Protected Routes / User Authentication Gate */}
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-1">
+              <div className="flex items-center justify-between font-bold text-white">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  7. Protected Routes & Authentication Gate
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">MENUKA ACTIVE</span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Trading dashboard, live scanner, CCXT executions, and settings are fully protected behind a credential gate (<code className="text-amber-400">Menuka</code> / <code className="text-amber-400">2006</code>). Active session state persists across refreshes with a visible header Logout control.
               </p>
             </div>
           </div>

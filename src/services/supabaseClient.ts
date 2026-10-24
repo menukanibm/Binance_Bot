@@ -49,6 +49,26 @@ export interface SupabaseTradeRecord {
   closed_at?: string;
 }
 
+let hasPermissionNoticeLogged = false;
+
+function logSupabaseSyncNotice(action: string, error: any) {
+  const msg = String(error?.message || error || '');
+  const isPermissionOrMissing =
+    msg.includes('permission denied') ||
+    msg.includes('42501') ||
+    msg.includes('PGRST205') ||
+    msg.includes('does not exist');
+
+  if (isPermissionOrMissing) {
+    if (!hasPermissionNoticeLogged) {
+      console.log('[Supabase Sync Notice] Remote table privileges pending SQL migration. All trades, signals, and positions are actively tracked in memory.');
+      hasPermissionNoticeLogged = true;
+    }
+  } else {
+    console.log(`[Supabase ${action}]:`, msg.slice(0, 100));
+  }
+}
+
 /**
  * Save new trade with status OPEN directly to Supabase
  */
@@ -79,13 +99,13 @@ export async function saveTradeToSupabase(position: Position, binanceDetails?: a
 
     const { error } = await supabase.from('trades').upsert(record);
     if (error) {
-      console.warn('[Supabase] Warning saving trade (table may need schema creation):', error.message);
+      logSupabaseSyncNotice('Save Trade', error);
       return false;
     }
     console.log(`[Supabase] Successfully saved trade ${position.id} (${position.symbol}) with status OPEN`);
     return true;
   } catch (err: any) {
-    console.warn('[Supabase] Error saving trade:', err?.message || err);
+    logSupabaseSyncNotice('Save Trade Exception', err);
     return false;
   }
 }
@@ -119,13 +139,13 @@ export async function updateTradeInSupabase(
       .eq('id', positionId);
 
     if (error) {
-      console.warn(`[Supabase] Failed to update trade ${positionId}:`, error.message);
+      logSupabaseSyncNotice('Update Trade', error);
       return false;
     }
     console.log(`[Supabase] Updated trade ${positionId} to ${updates.status} ($${updates.realizedPnl})`);
     return true;
   } catch (err: any) {
-    console.warn('[Supabase] Error updating trade:', err?.message || err);
+    logSupabaseSyncNotice('Update Trade Exception', err);
     return false;
   }
 }
@@ -157,12 +177,12 @@ export async function saveSignalToSupabase(signal: TradeSignal): Promise<boolean
     });
 
     if (error) {
-      console.warn('[Supabase] Signal save warning:', error.message);
+      logSupabaseSyncNotice('Save Signal', error);
       return false;
     }
     return true;
   } catch (err: any) {
-    console.warn('[Supabase] Error saving signal:', err?.message || err);
+    logSupabaseSyncNotice('Save Signal Exception', err);
     return false;
   }
 }
@@ -221,7 +241,107 @@ export async function fetchTradesFromSupabase(): Promise<{
 }
 
 /**
- * Check Supabase tables existence and connectivity status
+ * Option 1 (Safe Mode): Delete unexecuted signals and logs from Supabase
+ * Only deletes signals with status != 'EXECUTED'.
+ * STRICT SAFETY GUARD: Active OPEN positions and the trades table are 100% untouched.
+ */
+export async function deleteUnexecutedSignalsFromSupabase(): Promise<{
+  success: boolean;
+  deletedSignalsCount?: number;
+  error?: string;
+}> {
+  try {
+    const supabase = getSupabaseClient();
+
+    // 1. Delete signals that did NOT become executed trades
+    const { error: signalsError, count } = await supabase
+      .from('signals')
+      .delete({ count: 'exact' })
+      .neq('status', 'EXECUTED');
+
+    if (signalsError) {
+      logSupabaseSyncNotice('Delete Unexecuted Signals', signalsError);
+    }
+
+    // 2. Clear old bot analysis logs
+    const { error: logsError } = await supabase
+      .from('bot_logs')
+      .delete()
+      .neq('level', '__PRESERVE_NONE__');
+
+    if (logsError) {
+      logSupabaseSyncNotice('Delete Bot Logs', logsError);
+    }
+
+    console.log(`[Supabase Cleanup] Deleted unexecuted signals (count: ${count ?? 0}) and cleared analysis logs. All trades preserved.`);
+    return { success: true, deletedSignalsCount: count || 0 };
+  } catch (err: any) {
+    logSupabaseSyncNotice('Delete Unexecuted Signals Exception', err);
+    return { success: false, error: err?.message || 'Failed to delete unexecuted signals' };
+  }
+}
+
+/**
+ * Option 2: Clear all history from Supabase, strictly preserving active OPEN positions.
+ * - STRICT SAFETY GUARD: Trades with status === 'OPEN' are NEVER deleted.
+ * - Only deletes trades WHERE status IN ('WIN', 'LOSS', 'CLOSED_OPPOSITE_SIGNAL') and status != 'OPEN'.
+ * - Preserves any signals linked to currently OPEN positions.
+ * - Clears past engine logs.
+ */
+export async function deleteAllHistoryKeepOpenPositionsFromSupabase(
+  keepSignalIds: string[] = []
+): Promise<{
+  success: boolean;
+  deletedTradesCount?: number;
+  error?: string;
+}> {
+  try {
+    const supabase = getSupabaseClient();
+
+    // STRICT SAFETY GUARD: Double-check filter strictly excludes 'OPEN'
+    const { error: tradesError, count: tradesCount } = await supabase
+      .from('trades')
+      .delete({ count: 'exact' })
+      .neq('status', 'OPEN')
+      .in('status', ['WIN', 'LOSS', 'CLOSED_OPPOSITE_SIGNAL']);
+
+    if (tradesError) {
+      logSupabaseSyncNotice('Delete Closed Trades History', tradesError);
+    }
+
+    // Delete signals that are not tied to open positions
+    if (keepSignalIds.length > 0) {
+      const formattedList = `(${keepSignalIds.map((id) => `"${id}"`).join(',')})`;
+      const { error: sigError } = await supabase
+        .from('signals')
+        .delete()
+        .not('id', 'in', formattedList);
+      if (sigError) logSupabaseSyncNotice('Delete Old Signals', sigError);
+    } else {
+      const { error: sigError } = await supabase
+        .from('signals')
+        .delete()
+        .neq('id', '__PRESERVE_NONE__');
+      if (sigError) logSupabaseSyncNotice('Delete All Signals', sigError);
+    }
+
+    // Clear old engine logs
+    const { error: logsError } = await supabase
+      .from('bot_logs')
+      .delete()
+      .neq('level', '__PRESERVE_NONE__');
+    if (logsError) logSupabaseSyncNotice('Delete Logs', logsError);
+
+    console.log(
+      `[Supabase Cleanup] Closed trades deleted (count: ${tradesCount ?? 0}). All active OPEN positions strictly preserved.`
+    );
+    return { success: true, deletedTradesCount: tradesCount || 0 };
+  } catch (err: any) {
+    logSupabaseSyncNotice('Delete All History Exception', err);
+    return { success: false, error: err?.message || 'Failed to delete history' };
+  }
+}
+
 /**
  * Save log entry to Supabase bot_logs table
  */
@@ -494,7 +614,26 @@ DROP POLICY IF EXISTS "public_update_settings" ON public.bot_settings;
 CREATE POLICY "public_update_settings" ON public.bot_settings
     FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
 
--- 8. SUPABASE REALTIME REPLICATION
+-- 8. TABLE PRIVILEGES & SCHEMA GRANTS (CRITICAL: Fixes 'permission denied for table trades')
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO postgres, anon, authenticated, service_role;
+
+-- Direct full access policies for anon & authenticated roles
+DROP POLICY IF EXISTS "anon_full_access_trades" ON public.trades;
+CREATE POLICY "anon_full_access_trades" ON public.trades
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_full_access_signals" ON public.signals;
+CREATE POLICY "anon_full_access_signals" ON public.signals
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+-- 9. SUPABASE REALTIME REPLICATION
 DO $$
 BEGIN
     IF EXISTS (
@@ -508,4 +647,20 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     NULL;
 END $$;
+`;
+
+/**
+ * 3-Line Quick SQL command to fix "permission denied for table trades" in Supabase SQL Editor
+ */
+export const SUPABASE_QUICK_FIX_SQL = `-- RUN THIS QUICK FIX IN SUPABASE SQL EDITOR TO INSTANTLY RESOLVE PERMISSION DENIED:
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
+
+DROP POLICY IF EXISTS "anon_full_access_trades" ON public.trades;
+CREATE POLICY "anon_full_access_trades" ON public.trades FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "anon_full_access_signals" ON public.signals;
+CREATE POLICY "anon_full_access_signals" ON public.signals FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 `;

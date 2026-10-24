@@ -10,18 +10,21 @@ import {
   Radio,
   Layers,
   Zap,
+  Trash2,
 } from 'lucide-react';
 
 interface SignalsFeedProps {
   signals: TradeSignal[];
   status: BotStatus;
   onSelectSymbol: (symbol: string) => void;
+  onOpenCleanupSignals?: () => void;
 }
 
 export const SignalsFeed: React.FC<SignalsFeedProps> = ({
   signals,
   status,
   onSelectSymbol,
+  onOpenCleanupSignals,
 }) => {
   return (
     <div className="space-y-4">
@@ -92,14 +95,30 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
       )}
 
       {/* Signals Feed Header */}
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
-          <Zap className="w-4 h-4 text-amber-400" />
-          Live Signal & Execution Feed
-        </h3>
-        <span className="text-xs text-slate-400 font-mono">
-          Auto-Trading on Binance Futures (&gt;80% Gemini Validation)
-        </span>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-400" />
+            Live Signal & Execution Feed
+          </h3>
+          <span className="text-xs text-slate-400 font-mono">
+            Auto-Trading on Binance Futures (&gt;80% Gemini Validation)
+          </span>
+        </div>
+
+        {onOpenCleanupSignals && (
+          <button
+            onClick={onOpenCleanupSignals}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 hover:text-amber-300 border border-slate-700 hover:border-amber-500/40 text-xs font-semibold flex items-center gap-1.5 transition self-start sm:self-auto shadow-sm"
+            title="Safe Mode: Clear past unexecuted signals and logs. All active open positions are strictly preserved."
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Clear Unexecuted Signals</span>
+            <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-bold">
+              Safe Mode
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Signal Cards List */}

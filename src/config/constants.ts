@@ -7,7 +7,7 @@ export const CONFIG = {
   SUPABASE_URL:
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
     process.env.SUPABASE_URL ||
-    'https://geoamvgfucsnegxkktg.supabase.co',
+    'https://geoamvgfucsnegxkkktg.supabase.co',
   SUPABASE_ANON_KEY:
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_ANON_KEY ||
@@ -24,11 +24,18 @@ export const CONFIG = {
   // Binance Futures Production Credentials
   BINANCE_API_KEY:
     process.env.BINANCE_API_KEY ||
-    '3Tpfy3mdXl9YfEReTqaL4G81BfOwwwAbHy6Vqh29djo9Rr3FY6dMJf6ePsErocl0',
+    'ppY05iFRtcqV4XwU5aGUEYi3gJxmMzAf7npGCB5Zla3MhxwrRpn0g0EqxAh7BrCV1',
   BINANCE_SECRET_KEY:
     process.env.BINANCE_SECRET_KEY ||
     process.env.BINANCE_API_SECRET ||
-    'mu1hPa8Utz1SLrNoFtHgIUgQlxkAeAfPONPGHYCfMuKL8hvxZy1Mt8gbZtiUCr4E',
+    'QOzz9MegGURyeFxJfJHscPq2MRsoqnJ3Ka35c0BcsMhEMKsAZYZbE5XgPsbC1vi8',
   BINANCE_TESTNET:
     process.env.BINANCE_TESTNET === 'true' ? true : false,
+
+  // Risk & Margin Management Rules (Strict ISOLATED mode & Configurable Margin Cap)
+  MAX_TOTAL_MARGIN_PCT: process.env.MAX_TOTAL_MARGIN_PCT
+    ? parseFloat(process.env.MAX_TOTAL_MARGIN_PCT)
+    : 10,
+  MARGIN_MODE: 'ISOLATED' as const,
 };
+

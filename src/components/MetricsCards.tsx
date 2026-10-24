@@ -8,6 +8,7 @@ import {
   Sparkles,
   DollarSign,
   CheckCircle2,
+  Shield,
 } from 'lucide-react';
 
 interface MetricsCardsProps {
@@ -18,7 +19,7 @@ export const MetricsCards: React.FC<MetricsCardsProps> = ({ status }) => {
   const isPnlPositive = status.netPnl >= 0;
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
       {/* Net Realized PnL */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 shadow-sm">
         <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
@@ -82,6 +83,27 @@ export const MetricsCards: React.FC<MetricsCardsProps> = ({ status }) => {
         </div>
         <div className="text-[10px] text-slate-500 mt-0.5">
           USDT Collateral
+        </div>
+      </div>
+
+      {/* Active Margin & Risk Cap */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 shadow-sm relative overflow-hidden">
+        <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+          <span className="flex items-center gap-1 text-amber-400 font-semibold">
+            <Shield className="w-3.5 h-3.5 text-amber-400" /> Active Margin
+          </span>
+          <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+            ISOLATED
+          </span>
+        </div>
+        <div className="text-lg font-bold font-mono text-white">
+          ${(status.totalActiveMarginUsdt || 0).toFixed(2)}
+        </div>
+        <div className="text-[10px] text-slate-400 mt-0.5 flex items-center justify-between font-mono">
+          <span className={status.totalActiveMarginPercent > (status.maxTotalMarginPct || 10) * 0.8 ? 'text-amber-400 font-bold' : 'text-slate-400'}>
+            {(status.totalActiveMarginPercent || 0).toFixed(1)}% Active
+          </span>
+          <span className="text-slate-500">Cap: {status.maxTotalMarginPct || 10}%</span>
         </div>
       </div>
 

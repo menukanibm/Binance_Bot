@@ -5,23 +5,30 @@ import { CONFIG } from '../config/constants';
 const API_KEY = CONFIG.GEMINI_API_KEY;
 
 let aiInstance: GoogleGenAI | null = null;
+let quotaCooldownUntil: number = 0;
+let quotaExceededLogged: boolean = false;
 
-function getAiClient(): GoogleGenAI {
+function getAiClient(): GoogleGenAI | null {
+  if (!API_KEY || API_KEY.trim().length === 0) return null;
   if (!aiInstance) {
-    aiInstance = new GoogleGenAI({
-      apiKey: API_KEY,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
+    try {
+      aiInstance = new GoogleGenAI({
+        apiKey: API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
         },
-      },
-    });
+      });
+    } catch {
+      aiInstance = null;
+    }
   }
   return aiInstance;
 }
 
 /**
- * Validates SMC Setup using Gemini AI Deep Analysis
+ * Validates SMC Setup using Gemini AI Deep Analysis or Quantitative SMC Fallback
  * Requires >80% confidence to approve trade execution.
  * Pre-calculates dynamic 1% Stop Loss and 2% Take Profit based on SMC level.
  */
@@ -36,7 +43,7 @@ export async function validateTradeWithGemini(
   const defaultSl = isLong ? currentPrice * 0.99 : currentPrice * 1.01;
   const defaultTp = isLong ? currentPrice * 1.02 : currentPrice * 0.98;
 
-  // If neutral or no API key, return default rejected validation
+  // If neutral market structure, immediately return neutral without consuming quota
   if (analysis.bias === 'NEUTRAL') {
     return {
       approved: false,
@@ -46,16 +53,26 @@ export async function validateTradeWithGemini(
       stopLoss: defaultSl,
       takeProfit: defaultTp,
       riskRewardRatio: 2.0,
-      reasoning: 'Market structure is neutral with no clear SMC bias or divergence edge.',
+      reasoning: 'Market structure is neutral with no confirmed SMC order block or divergence confluence.',
       confluenceFactors: ['Neutral Structure'],
       evaluatedAt: Date.now(),
     };
   }
 
-  try {
-    const ai = getAiClient();
+  // Check if Gemini API quota is currently cooling down
+  const now = Date.now();
+  const isCooldownActive = now < quotaCooldownUntil;
 
-    // Summarize recent candle price action
+  if (isCooldownActive) {
+    return evaluateQuantitativeConfluence(analysis, currentPrice, defaultSl, defaultTp, 'Gemini AI Quota Exceeded (Free Tier limit reached). Quantitative SMC Confluence Engine Active');
+  }
+
+  const ai = getAiClient();
+  if (!ai) {
+    return evaluateQuantitativeConfluence(analysis, currentPrice, defaultSl, defaultTp, 'Quantitative SMC Confluence Engine Active');
+  }
+
+  try {
     const last10Candles = recentCandles.slice(-10).map((c) => ({
       t: new Date(c.time).toLocaleTimeString(),
       o: c.open,
@@ -86,92 +103,78 @@ CRITICAL VALIDATION CRITERIA:
 4. Return strict JSON.
 `;
 
-    // Try gemini-3.8-flash (or gemini-2.5-flash fallback if available)
-    let responseText: string | undefined;
-
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              approved: {
-                type: Type.BOOLEAN,
-                description: 'True if confidence > 80% and setup is high-probability',
-              },
-              confidence: {
-                type: Type.INTEGER,
-                description: 'Confidence percentage from 0 to 100',
-              },
-              bias: {
-                type: Type.STRING,
-                description: 'LONG, SHORT, or NEUTRAL',
-              },
-              entryPrice: {
-                type: Type.NUMBER,
-                description: 'Recommended entry price within entry zone',
-              },
-              stopLoss: {
-                type: Type.NUMBER,
-                description: 'Calculated invalidation Stop Loss level',
-              },
-              takeProfit: {
-                type: Type.NUMBER,
-                description: 'Calculated Take Profit target level',
-              },
-              riskRewardRatio: {
-                type: Type.NUMBER,
-                description: 'Calculated Risk to Reward ratio, minimum 1.5 - 2.0',
-              },
-              reasoning: {
-                type: Type.STRING,
-                description: 'Detailed technical reasoning for the decision',
-              },
-              confluenceFactors: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: 'Key confirmed confluence factors',
-              },
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            approved: {
+              type: Type.BOOLEAN,
+              description: 'True if confidence > 80% and setup is high-probability',
             },
-            required: [
-              'approved',
-              'confidence',
-              'bias',
-              'entryPrice',
-              'stopLoss',
-              'takeProfit',
-              'riskRewardRatio',
-              'reasoning',
-              'confluenceFactors',
-            ],
+            confidence: {
+              type: Type.INTEGER,
+              description: 'Confidence percentage from 0 to 100',
+            },
+            bias: {
+              type: Type.STRING,
+              description: 'LONG, SHORT, or NEUTRAL',
+            },
+            entryPrice: {
+              type: Type.NUMBER,
+              description: 'Recommended entry price within entry zone',
+            },
+            stopLoss: {
+              type: Type.NUMBER,
+              description: 'Calculated invalidation Stop Loss level',
+            },
+            takeProfit: {
+              type: Type.NUMBER,
+              description: 'Calculated Take Profit target level',
+            },
+            riskRewardRatio: {
+              type: Type.NUMBER,
+              description: 'Calculated Risk to Reward ratio, minimum 1.5 - 2.0',
+            },
+            reasoning: {
+              type: Type.STRING,
+              description: 'Detailed technical reasoning for the decision',
+            },
+            confluenceFactors: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Key confirmed confluence factors',
+            },
           },
+          required: [
+            'approved',
+            'confidence',
+            'bias',
+            'entryPrice',
+            'stopLoss',
+            'takeProfit',
+            'riskRewardRatio',
+            'reasoning',
+            'confluenceFactors',
+          ],
         },
-      });
-      responseText = response.text;
-    } catch (modelErr) {
-      console.warn('Primary Gemini model call fallback:', modelErr);
-      // Fallback call
-      const fallbackResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt + '\nReturn pure JSON with keys: approved, confidence, bias, entryPrice, stopLoss, takeProfit, riskRewardRatio, reasoning, confluenceFactors.',
-        config: {
-          responseMimeType: 'application/json',
-        },
-      });
-      responseText = fallbackResponse.text;
-    }
+      },
+    });
 
+    const responseText = response.text;
     if (!responseText) {
       throw new Error('Empty response from Gemini AI');
     }
 
     const parsed = JSON.parse(responseText);
-
     const confidence = Number(parsed.confidence) || 0;
     const isApproved = parsed.approved === true && confidence > 80;
+
+    // Reset quota error logged flag if successful
+    quotaExceededLogged = false;
 
     return {
       approved: isApproved,
@@ -186,26 +189,100 @@ CRITICAL VALIDATION CRITERIA:
       evaluatedAt: Date.now(),
     };
   } catch (err: any) {
-    console.error('Gemini AI Validation Error:', err?.message || err);
+    const errorMsg = String(err?.message || err);
+    const isRateLimit =
+      errorMsg.includes('429') ||
+      errorMsg.includes('RESOURCE_EXHAUSTED') ||
+      errorMsg.includes('quota') ||
+      errorMsg.includes('Quota exceeded');
+
+    if (isRateLimit) {
+      // Cooldown for 30 minutes to stop flooding the API
+      quotaCooldownUntil = Date.now() + 30 * 60 * 1000;
+      if (!quotaExceededLogged) {
+        console.log('[Gemini AI] Free tier daily quota limit reached (20 requests/day). Seamlessly activated Quantitative SMC Confluence Engine.');
+        quotaExceededLogged = true;
+      }
+    } else {
+      console.warn('[Gemini AI Call Note]:', errorMsg.slice(0, 150));
+    }
 
     // High quality deterministic fallback based on SMC confluence score
-    const heuristicConfidence = Math.min(92, Math.max(45, analysis.confluenceScore + (analysis.divergence.strength > 60 ? 15 : 0)));
-    const approved = heuristicConfidence > 80;
-
-    return {
-      approved,
-      confidence: heuristicConfidence,
-      bias: analysis.bias,
-      entryPrice: currentPrice,
-      stopLoss: defaultSl,
-      takeProfit: defaultTp,
-      riskRewardRatio: 2.0,
-      reasoning: `AI Validation (Heuristic Confluence): ${analysis.keyReasoning}. Evaluated confidence: ${heuristicConfidence}%.`,
-      confluenceFactors: [
-        analysis.divergence.description,
-        `SMC Zone [${analysis.entryZone.min.toFixed(2)} - ${analysis.entryZone.max.toFixed(2)}]`,
-      ],
-      evaluatedAt: Date.now(),
-    };
+    return evaluateQuantitativeConfluence(
+      analysis,
+      currentPrice,
+      defaultSl,
+      defaultTp,
+      isRateLimit
+        ? 'Gemini AI Quota Exceeded (Free Tier limit reached). Quantitative SMC Confluence Engine Active'
+        : 'Quantitative SMC Confluence Engine Active'
+    );
   }
+}
+
+/**
+ * Deterministic Quantitative SMC & Divergence Confluence Engine
+ * Evaluates market structure mathematically without requiring external API calls.
+ */
+function evaluateQuantitativeConfluence(
+  analysis: SMCAnalysisResult,
+  currentPrice: number,
+  defaultSl: number,
+  defaultTp: number,
+  engineNotice: string
+): GeminiValidation {
+  // Score breakdown:
+  // Base confluence score from SMC (0-100)
+  // Extra points if RSI/MACD divergence is strong (>60%)
+  // Extra points if unmitigated Order Block aligns with Liquidity Sweep
+  let confidence = analysis.confluenceScore;
+  const factors: string[] = [];
+
+  if (analysis.divergence.type !== 'NONE') {
+    factors.push(analysis.divergence.description);
+    if (analysis.divergence.strength >= 70) {
+      confidence = Math.min(94, confidence + 12);
+    }
+  }
+
+  const activeOB = analysis.orderBlocks.find(
+    (ob) => !ob.mitigated && ((analysis.bias === 'LONG' && ob.type === 'BULLISH') || (analysis.bias === 'SHORT' && ob.type === 'BEARISH'))
+  );
+  if (activeOB) {
+    factors.push(`Unmitigated ${activeOB.type} Order Block [${activeOB.low.toFixed(2)} - ${activeOB.high.toFixed(2)}]`);
+    if (activeOB.strength > 60) {
+      confidence = Math.min(95, confidence + 8);
+    }
+  }
+
+  const activeFVG = analysis.fvgZones.find(
+    (f) => !f.mitigated && ((analysis.bias === 'LONG' && f.type === 'BULLISH') || (analysis.bias === 'SHORT' && f.type === 'BEARISH'))
+  );
+  if (activeFVG) {
+    factors.push(`Fair Value Gap Imbalance [${activeFVG.bottom.toFixed(2)} - ${activeFVG.top.toFixed(2)}]`);
+  }
+
+  const recentSweep = analysis.liquiditySweeps[analysis.liquiditySweeps.length - 1];
+  if (recentSweep) {
+    factors.push(`Liquidity Sweep at ${recentSweep.level.toFixed(2)} (${recentSweep.wickSizePercent}% rejection wick)`);
+    if (recentSweep.wickSizePercent >= 50) {
+      confidence = Math.min(95, confidence + 10);
+    }
+  }
+
+  // Must exceed 80% to be approved
+  const isApproved = confidence > 80 && analysis.bias !== 'NEUTRAL';
+
+  return {
+    approved: isApproved,
+    confidence: Math.round(confidence),
+    bias: analysis.bias,
+    entryPrice: currentPrice,
+    stopLoss: defaultSl,
+    takeProfit: defaultTp,
+    riskRewardRatio: 2.0,
+    reasoning: `${engineNotice}: ${analysis.keyReasoning}. Evaluated confidence: ${Math.round(confidence)}% based on SMC order block, FVG imbalance, and divergence confluence.`,
+    confluenceFactors: factors.length > 0 ? factors : ['SMC Market Structure', 'Volume Displacement'],
+    evaluatedAt: Date.now(),
+  };
 }

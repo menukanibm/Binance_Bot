@@ -110,6 +110,7 @@ export interface Position {
   unrealizedPnlPercent: number;
   leverage: number;
   marginUsed: number;
+  marginMode?: 'ISOLATED';
   openedAt: number;
   closedAt?: number;
   status: 'OPEN' | 'WIN' | 'LOSS' | 'CLOSED_OPPOSITE_SIGNAL';
@@ -143,6 +144,11 @@ export interface BotStatus {
   winRate: number;
   netPnl: number;
   accountBalance: number;
+  freeUsdt: number;
+  totalActiveMarginUsdt: number;
+  totalActiveMarginPercent: number;
+  maxTotalMarginPct: number;
+  marginMode: 'ISOLATED';
   tradingMode: 'PAPER' | 'TESTNET' | 'LIVE';
   geminiModel: string;
   geminiThreshold: number;
@@ -159,4 +165,7 @@ export interface BotSettings {
   defaultTpPercent: number;
   binanceApiKey: string;
   binanceApiSecret: string;
+  maxTotalMarginPct: number;
+  marginMode: 'ISOLATED';
 }
+

@@ -10,6 +10,9 @@ import {
   Sliders,
   ShieldCheck,
   Zap,
+  Trash2,
+  LogOut,
+  User,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -18,8 +21,11 @@ interface NavbarProps {
   onToggleBot: () => void;
   onTriggerScan: () => void;
   onOpenSettings: () => void;
+  onOpenCleanup?: () => void;
   countdown: number;
   isScanning: boolean;
+  currentUser?: string;
+  onLogout?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -28,8 +34,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleBot,
   onTriggerScan,
   onOpenSettings,
+  onOpenCleanup,
   countdown,
   isScanning,
+  currentUser = 'Menuka',
+  onLogout,
 }) => {
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -155,6 +164,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </button>
 
+          {/* Data Cleanup Button */}
+          {onOpenCleanup && (
+            <button
+              onClick={onOpenCleanup}
+              title="Clear Historical Signals, Analysis & Trade Data from Supabase"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border border-slate-800 hover:border-amber-500/40 text-xs font-medium transition"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Data Cleanup</span>
+            </button>
+          )}
+
           {/* Settings Button */}
           <button
             onClick={onOpenSettings}
@@ -163,6 +184,29 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Sliders className="w-4 h-4" />
           </button>
+
+          {/* User Session & Logout */}
+          <div className="flex items-center gap-1.5 pl-1 border-l border-slate-800">
+            <div
+              title={`Logged in as ${currentUser}`}
+              className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300"
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span className="text-slate-400 text-[11px]">User:</span>
+              <strong className="text-slate-200">{currentUser}</strong>
+            </div>
+
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                title="Log out from Menuka Trading Terminal"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 hover:text-white border border-rose-800/60 hover:border-rose-600 text-xs font-semibold transition shadow-sm cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                <span>Logout</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </header>

@@ -129,6 +129,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
+          {/* Strict Risk & Margin Management Rules */}
+          <div className="bg-slate-950/80 border border-amber-500/30 rounded-xl p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Shield className="w-4 h-4 text-amber-400" />
+                Max Total Active Margin Cap
+              </label>
+              <span className="text-xs font-bold font-mono text-amber-400">
+                {form.maxTotalMarginPct || 10}% of Account USDT
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              New trades are strictly rejected if total active margin across all open trades (including the new position) exceeds this percentage of your total USDT account balance.
+            </p>
+            <input
+              type="range"
+              min="2"
+              max="50"
+              step="1"
+              value={form.maxTotalMarginPct || 10}
+              onChange={(e) => setForm({ ...form, maxTotalMarginPct: parseInt(e.target.value) })}
+              className="w-full accent-amber-500 cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+              <span>2% Conservative</span>
+              <span className="text-amber-400 font-bold">{form.maxTotalMarginPct || 10}% Cap</span>
+              <span>50% Aggressive</span>
+            </div>
+
+            {/* Isolated Margin Mode Only Banner */}
+            <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center gap-1">
+                    <span>Margin Mode:</span>
+                    <span className="text-emerald-400 font-mono uppercase">ISOLATED ONLY</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Cross margin is strictly disabled & rejected to protect account capital from liquidation.
+                  </div>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold">
+                ENFORCED
+              </span>
+            </div>
+          </div>
+
           {/* Gemini AI Validation Threshold */}
           <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between">
