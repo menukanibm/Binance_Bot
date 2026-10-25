@@ -24,6 +24,7 @@ interface NavbarProps {
   onOpenCleanup?: () => void;
   countdown: number;
   isScanning: boolean;
+  isToggling?: boolean;
   currentUser?: string;
   onLogout?: () => void;
 }
@@ -37,6 +38,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenCleanup,
   countdown,
   isScanning,
+  isToggling = false,
   currentUser = 'Menuka',
   onLogout,
 }) => {
@@ -145,13 +147,21 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Auto-Trading Toggle */}
           <button
             onClick={onToggleBot}
+            disabled={isToggling}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition border ${
+              isToggling ? 'opacity-60 cursor-not-allowed' : ''
+            } ${
               status.isRunning
                 ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400/30 shadow-lg shadow-emerald-600/20'
                 : 'bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border-rose-800'
             }`}
           >
-            {status.isRunning ? (
+            {isToggling ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>UPDATING...</span>
+              </>
+            ) : status.isRunning ? (
               <>
                 <Pause className="w-3.5 h-3.5 fill-current" />
                 <span>AUTO-TRADE ON</span>

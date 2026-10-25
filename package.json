@@ -3,13 +3,20 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build:ui": "vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --format=cjs --outfile=dist-server/server.cjs --external:vite --external:fsevents --external:electron",
+    "build": "npm run build:ui && npm run build:server",
     "start": "tsx server.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "clean": "rm -rf dist dist-server release",
+    "lint": "tsc --noEmit",
+    "electron:dev": "cross-env NODE_ENV=development concurrently -k -s first \"npm run dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
+    "electron:pack": "npm run build && electron-builder --dir",
+    "electron:build": "npm run build && electron-builder --win --x64",
+    "electron:dist": "npm run build && electron-builder --win nsis portable --x64"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -26,14 +33,64 @@
     "vite": "^8.3.0"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^10.0.6",
+    "cross-env": "^10.1.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "@types/express": "^4.17.21"
+    "wait-on": "^9.5.1"
+  },
+  "build": {
+    "appId": "com.menuka.tradingbot",
+    "productName": "Binance SMC AI Trading Terminal",
+    "copyright": "Copyright © 2026 Menuka",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-server/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".env.example",
+        "to": ".env.example"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Binance SMC AI Terminal"
+    }
   }
 }

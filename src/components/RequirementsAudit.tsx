@@ -380,6 +380,26 @@ export const RequirementsAudit: React.FC = () => {
                 Trading dashboard, live scanner, CCXT executions, and settings are fully protected behind a credential gate (<code className="text-amber-400">Menuka</code> / <code className="text-amber-400">2006</code>). Active session state persists across refreshes with a visible header Logout control.
               </p>
             </div>
+
+            {/* Requirement 8: Standalone Windows .exe Desktop Application (Electron) */}
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-2">
+              <div className="flex items-center justify-between font-bold text-white">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  8. Standalone Windows 64-Bit Desktop Executable (.exe)
+                </span>
+                <span className="text-[10px] text-emerald-400 font-mono">READY TO BUILD</span>
+              </div>
+              <p className="text-slate-400 text-[11px]">
+                Configured with <strong>Electron</strong> and <strong>electron-builder</strong>. Embeds the full Node.js Express backend and CCXT Binance engine inside the desktop process, requiring no external Node installation on the target Windows system.
+              </p>
+              <div className="p-2.5 bg-slate-900 border border-slate-800 rounded text-[11px] font-mono text-slate-300 space-y-1.5">
+                <div className="text-amber-400 font-bold">To test and build Windows 64-bit .exe executables:</div>
+                <div className="text-slate-400">• Development desktop mode: <code className="text-emerald-400">npm run electron:dev</code></div>
+                <div className="text-slate-400">• Compile Windows Setup Installer & Portable .exe: <code className="text-emerald-400">npm run electron:build</code></div>
+                <div className="text-slate-500 text-[10px]">Output location: <code className="text-slate-400">release/Binance SMC AI Trading Terminal-Setup-0.0.0-x64.exe</code></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

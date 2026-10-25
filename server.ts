@@ -1,8 +1,9 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
+import http from 'http';
 import { fileURLToPath } from 'url';
-import { createServer as createViteServer } from 'vite';
 import { tradingEngine } from './src/services/tradingEngine';
 import { binanceCcxt } from './src/services/binanceCcxtService';
 import { analyzeSMC } from './src/services/technicalAnalysis';
@@ -11,12 +12,21 @@ import { checkSupabaseConnection, SUPABASE_SQL_SCHEMA, SUPABASE_QUICK_FIX_SQL } 
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Cross-compatible __dirname resolution for both ESM (tsx) and CJS (Electron / esbuild)
+let currentDirname = process.cwd();
+try {
+  if (typeof import.meta !== 'undefined' && import.meta.url) {
+    currentDirname = path.dirname(fileURLToPath(import.meta.url));
+  } else if (typeof __dirname !== 'undefined') {
+    currentDirname = __dirname;
+  }
+} catch {
+  currentDirname = process.cwd();
+}
 
-async function createServer() {
+async function createServer(customPort?: number) {
   const app = express();
-  const port = process.env.PORT || 3000;
+  const port = customPort || process.env.PORT || 3000;
 
   app.use(express.json());
 
@@ -287,24 +297,49 @@ async function createServer() {
   // -------------------------------------------------------------
   // Vite Integration (Dev) or Static Assets (Prod)
   // -------------------------------------------------------------
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
+  if (process.env.NODE_ENV !== 'production' && !process.env.SERVE_STATIC) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr) {
+      console.warn('[Vite Middleware Warn] Vite failed to mount in dev, falling back to static:', viteErr);
+    }
   } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    // Locate the dist directory across various execution roots (bundled Electron, tsx, node)
+    const possibleDistDirs = [
+      path.resolve(currentDirname, 'dist'),
+      path.resolve(currentDirname, '..', 'dist'),
+      path.resolve(process.cwd(), 'dist'),
+    ];
+    const resolvedDistDir = possibleDistDirs.find((d) => fs.existsSync(d)) || possibleDistDirs[0];
+
+    app.use(express.static(resolvedDistDir));
     app.get('*', (req: Request, res: Response) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.resolve(resolvedDistDir, 'index.html'));
     });
   }
 
-  app.listen(port, () => {
-    console.log(`🚀 Binance Auto-Trading Engine Server listening on port ${port}`);
+  return new Promise<{ app: express.Express; server: http.Server; port: number }>((resolve, reject) => {
+    const server = app.listen(port, () => {
+      console.log(`🚀 Binance Auto-Trading Engine Server listening on port ${port}`);
+      resolve({ app, server, port: Number(port) });
+    });
+    server.on('error', (err) => {
+      console.error(`[Server Listen Error on port ${port}]:`, err);
+      reject(err);
+    });
   });
 }
 
-createServer().catch((err) => {
-  console.error('Fatal Server Boot Error:', err);
-});
+export { createServer };
+
+// Direct execution auto-boot
+if (!process.env.ELECTRON_MANAGED) {
+  createServer().catch((err) => {
+    console.error('Fatal Server Boot Error:', err);
+  });
+}

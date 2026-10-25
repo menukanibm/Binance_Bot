@@ -87,6 +87,7 @@ export default function App() {
   const [signals, setSignals] = useState<TradeSignal[]>([]);
   const [logs, setLogs] = useState<{ time: string; message: string; type: string }[]>([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [isTogglingBot, setIsTogglingBot] = useState(false);
   const [countdown, setCountdown] = useState(120);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isCleanupModalOpen, setIsCleanupModalOpen] = useState(false);
@@ -209,21 +210,50 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isAuthenticated, status.nextScanTime]);
 
-  // Toggle Bot Auto-Trading
+  // Toggle Bot Auto-Trading with optimistic UI updates and resilient fallback
   const handleToggleBot = async () => {
+    if (isTogglingBot) return;
+    setIsTogglingBot(true);
+
+    const prevRunning = status.isRunning;
+    const nextRunning = !prevRunning;
+
+    // 1. Optimistic UI update so button provides immediate feedback
+    setStatus((prev) => ({
+      ...prev,
+      isRunning: nextRunning,
+      currentAction: nextRunning
+        ? 'Bot Status: Resuming Auto-Trading...'
+        : 'Bot Status: Idle (Auto-Trading Paused)',
+    }));
+
     try {
-      const res = await fetch('/api/bot/toggle', {
+      // Primary POST toggle request
+      let res = await fetch('/api/bot/toggle', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data.status) {
-          setStatus(data.status);
+      }).catch(() => null);
+
+      // Graceful fallback to GET in case of proxy issues
+      if (!res || !res.ok) {
+        res = await fetch('/api/bot/toggle', {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        }).catch(() => null);
+      }
+
+      if (res && res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.status) {
+            setStatus(data.status);
+          } else {
+            await fetchBotStatus();
+          }
         } else {
           await fetchBotStatus();
         }
@@ -231,13 +261,16 @@ export default function App() {
         await fetchBotStatus();
       }
     } catch (err) {
-      console.error('Toggle error:', err);
-      fetchBotStatus();
+      console.warn('Bot toggle request note (handled):', err);
+      await fetchBotStatus();
+    } finally {
+      setIsTogglingBot(false);
     }
   };
 
   // Trigger Immediate 2-Minute Scan
   const handleTriggerScan = async () => {
+    if (isScanning) return;
     setIsScanning(true);
     try {
       await fetch('/api/cron/scanner', {
@@ -246,10 +279,12 @@ export default function App() {
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
+      }).catch((netErr) => {
+        console.warn('Scanner trigger network note:', netErr);
       });
       await fetchBotStatus();
     } catch (err) {
-      console.error('Scan trigger error:', err);
+      console.warn('Scan trigger note:', err);
     } finally {
       setTimeout(() => setIsScanning(false), 2000);
     }
@@ -265,10 +300,12 @@ export default function App() {
           Accept: 'application/json',
         },
         body: JSON.stringify({ positionId, reason: 'Manual close from UI dashboard' }),
+      }).catch((netErr) => {
+        console.warn('Close position network note:', netErr);
       });
       fetchBotStatus();
     } catch (err) {
-      console.error('Close position error:', err);
+      console.warn('Close position note:', err);
     }
   };
 
@@ -282,15 +319,18 @@ export default function App() {
           Accept: 'application/json',
         },
         body: JSON.stringify(newSettings),
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data.settings) setSettings(data.settings);
-        fetchBotStatus();
+      }).catch(() => null);
+
+      if (res && res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.settings) setSettings(data.settings);
+        }
       }
+      fetchBotStatus();
     } catch (err) {
-      console.error('Save settings error:', err);
+      console.warn('Save settings note:', err);
     }
   };
 
@@ -316,6 +356,7 @@ export default function App() {
         onOpenCleanup={() => openCleanupModal('UNEXECUTED_SIGNALS')}
         countdown={countdown}
         isScanning={isScanning}
+        isToggling={isTogglingBot}
         currentUser={currentUser}
         onLogout={handleLogout}
       />

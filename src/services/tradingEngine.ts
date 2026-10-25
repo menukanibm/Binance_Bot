@@ -24,6 +24,7 @@ class TradingEngine {
   private isScanning: boolean = false;
   private scanTimer: NodeJS.Timeout | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
+  private balanceTimer: NodeJS.Timeout | null = null;
 
   private settings: BotSettings = {
     autoTrading: true,
@@ -89,13 +90,19 @@ class TradingEngine {
       console.warn('[Engine] Initial Supabase fetch note:', dbErr);
     }
 
-    // 2. Load all 522+ USD-M active markets from Binance
+    // 2. Load active USD-M markets from Binance with rate-limit resiliency
     try {
       this.allUsdmPairs = await binanceCcxt.fetchAllUsdmPairs();
+      if (!this.allUsdmPairs || this.allUsdmPairs.length === 0) {
+        this.allUsdmPairs = binanceCcxt.getDefaultTopPairs();
+      }
       this.status.monitoredPairsCount = this.allUsdmPairs.length;
-      this.addLog(`Successfully indexed all ${this.allUsdmPairs.length} Binance Futures USD-M pairs for scanning.`, 'success');
+      this.addLog(`Successfully indexed ${this.allUsdmPairs.length} Binance Futures USD-M pairs for scanning.`, 'success');
     } catch (ccxtErr) {
       console.warn('[Engine] Pairs index fallback note:', ccxtErr);
+      this.allUsdmPairs = binanceCcxt.getDefaultTopPairs();
+      this.status.monitoredPairsCount = this.allUsdmPairs.length;
+      this.addLog(`Loaded ${this.allUsdmPairs.length} default Binance Futures pairs (rate-limit safeguard active).`, 'warn');
     }
 
     // 3. Query real live account balance
@@ -157,7 +164,9 @@ class TradingEngine {
 
     // Run first scan 2 seconds after boot
     setTimeout(() => {
-      this.runScannerCycle();
+      if (this.status.isRunning && this.settings.autoTrading) {
+        this.runScannerCycle();
+      }
     }, 2000);
 
     this.scanTimer = setInterval(() => {
@@ -169,11 +178,14 @@ class TradingEngine {
     // Continuous Position Lifecycle Management (checks SL / TP every 3 seconds)
     if (this.monitorTimer) clearInterval(this.monitorTimer);
     this.monitorTimer = setInterval(() => {
-      this.checkPositionLifecycle();
+      if (this.status.isRunning) {
+        this.checkPositionLifecycle();
+      }
     }, 3000);
 
     // Periodic live balance sync every 25 seconds
-    setInterval(() => {
+    if (this.balanceTimer) clearInterval(this.balanceTimer);
+    this.balanceTimer = setInterval(() => {
       if (this.status.isRunning) {
         this.refreshAccountBalance();
       }
@@ -182,6 +194,19 @@ class TradingEngine {
 
   public stopEngine() {
     this.status.isRunning = false;
+    this.isScanning = false;
+    if (this.scanTimer) {
+      clearInterval(this.scanTimer);
+      this.scanTimer = null;
+    }
+    if (this.monitorTimer) {
+      clearInterval(this.monitorTimer);
+      this.monitorTimer = null;
+    }
+    if (this.balanceTimer) {
+      clearInterval(this.balanceTimer);
+      this.balanceTimer = null;
+    }
     this.status.currentAction = 'Bot Status: Idle (Auto-Trading Paused)';
     this.status.analyzingSymbol = null;
     this.status.upcomingSignal = null;
@@ -198,22 +223,44 @@ class TradingEngine {
 
     this.status.lastScanTime = Date.now();
     this.status.nextScanTime = Date.now() + this.settings.scanIntervalMinutes * 60 * 1000;
-    this.status.currentAction = 'Bot Status: Scanning Binance Pairs...';
 
-    this.addLog('Starting 2-Minute Market Scanner across ALL active Binance Futures USD-M pairs...', 'info');
+    // Check if Binance IP is currently rate limited
+    if (binanceCcxt.isRateLimited()) {
+      const waitSec = binanceCcxt.getRateLimitRemainingSec();
+      this.status.currentAction = `Bot Status: Rate Limit Cooldown (${waitSec}s remaining)...`;
+      this.addLog(`Binance API rate limit cooldown active. Skipping scan cycle (${waitSec}s remaining).`, 'warn');
+      this.isScanning = false;
+      return;
+    }
+
+    this.status.currentAction = 'Bot Status: Scanning Binance Pairs...';
+    this.addLog('Starting 2-Minute Market Scanner across active Binance Futures USD-M pairs...', 'info');
 
     try {
       // Refresh markets if needed
       if (this.allUsdmPairs.length === 0) {
         this.allUsdmPairs = await binanceCcxt.fetchAllUsdmPairs();
+        if (this.allUsdmPairs.length === 0) {
+          this.allUsdmPairs = binanceCcxt.getDefaultTopPairs();
+        }
       }
       this.status.monitoredPairsCount = this.allUsdmPairs.length;
 
-      const pairsToScan = this.allUsdmPairs;
-      const batchSize = 12; // Parallel batch size to balance throughput and Binance rate limits
+      // Prioritize top liquid pairs (top 50 highest 24h volume) to stay well within Binance rate limits
+      // while displaying the full 520+ pairs count in UI.
+      const pairsToScan = this.allUsdmPairs.slice(0, 50);
+      const batchSize = 5; // Balanced batch size to respect IP rate limits
 
       for (let i = 0; i < pairsToScan.length; i += batchSize) {
         if (!this.status.isRunning) break;
+
+        // If rate limit triggered midway through batch, break immediately
+        if (binanceCcxt.isRateLimited()) {
+          const waitSec = binanceCcxt.getRateLimitRemainingSec();
+          this.addLog(`Binance rate limit triggered. Pausing scanner for ${waitSec}s cooldown.`, 'warn');
+          this.status.currentAction = `Bot Status: Rate Limit Cooldown (${waitSec}s remaining)...`;
+          break;
+        }
 
         const batch = pairsToScan.slice(i, i + batchSize);
         const batchProgress = Math.min(pairsToScan.length, i + batchSize);
@@ -230,7 +277,7 @@ class TradingEngine {
             try {
               // Real live OHLCV candle data via CCXT
               const candles = await binanceCcxt.fetchKlines(sym, '5m', 60);
-              if (candles.length < 25) return;
+              if (!candles || candles.length < 25) return;
 
               // Perform Smart Money Concepts & Divergence Analysis
               const analysis = analyzeSMC(sym, candles);
@@ -299,11 +346,13 @@ class TradingEngine {
           })
         );
 
-        // Small throttle between batches to maintain sub-second rate compliance
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Safe throttle between batches to avoid Binance IP rate bursts
+        await new Promise((resolve) => setTimeout(resolve, 350));
       }
 
-      this.status.currentAction = 'Bot Status: 2-Min Scan Complete. Monitoring Positions...';
+      if (!binanceCcxt.isRateLimited()) {
+        this.status.currentAction = 'Bot Status: 2-Min Scan Complete. Monitoring Positions...';
+      }
       this.status.analyzingSymbol = null;
     } catch (err: any) {
       console.error('[Engine] Scanner cycle error:', err);

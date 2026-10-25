@@ -26,6 +26,8 @@ export class BinanceCcxtService {
   private cachedMarkets: Record<string, Market> = {};
   private cachedPairs: CcxtPairInfo[] = [];
   private lastMarketsFetch: number = 0;
+  private rateLimitedUntil: number = 0;
+  private rateLimitHits: number = 0;
 
   constructor(apiKey?: string, apiSecret?: string, isTestnet: boolean = false) {
     this.apiKey = apiKey || CONFIG.BINANCE_API_KEY;
@@ -72,27 +74,120 @@ export class BinanceCcxtService {
     return Boolean(this.apiSecret && this.apiSecret.trim().length > 10);
   }
 
+  public isRateLimited(): boolean {
+    return Date.now() < this.rateLimitedUntil;
+  }
+
+  public getRateLimitRemainingSec(): number {
+    return Math.max(0, Math.ceil((this.rateLimitedUntil - Date.now()) / 1000));
+  }
+
+  public handleRateLimit(cooldownMs: number = 60000) {
+    this.rateLimitHits++;
+    const actualCooldown = Math.min(300000, cooldownMs * Math.min(this.rateLimitHits, 5));
+    this.rateLimitedUntil = Date.now() + actualCooldown;
+    console.warn(
+      `[Binance Rate Limit] 429 / -1003 detected. Pausing requests for ${Math.round(actualCooldown / 1000)}s (cooldown hits: ${this.rateLimitHits}).`
+    );
+  }
+
+  public getDefaultTopPairs(): CcxtPairInfo[] {
+    const list: Array<{ s: string; b: string; pp: number; qp: number; mq: number }> = [
+      { s: 'BTCUSDT', b: 'BTC', pp: 1, qp: 3, mq: 0.001 },
+      { s: 'ETHUSDT', b: 'ETH', pp: 2, qp: 3, mq: 0.001 },
+      { s: 'SOLUSDT', b: 'SOL', pp: 2, qp: 1, mq: 0.1 },
+      { s: 'BNBUSDT', b: 'BNB', pp: 2, qp: 2, mq: 0.01 },
+      { s: 'DOGEUSDT', b: 'DOGE', pp: 5, qp: 0, mq: 1 },
+      { s: 'XRPUSDT', b: 'XRP', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'ADAUSDT', b: 'ADA', pp: 4, qp: 0, mq: 1 },
+      { s: 'AVAXUSDT', b: 'AVAX', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'LINKUSDT', b: 'LINK', pp: 3, qp: 2, mq: 0.01 },
+      { s: 'SUIUSDT', b: 'SUI', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'NEARUSDT', b: 'NEAR', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'PEPEUSDT', b: '1000PEPE', pp: 7, qp: 0, mq: 100 },
+      { s: 'SHIBUSDT', b: '1000SHIB', pp: 6, qp: 0, mq: 100 },
+      { s: 'APTUSDT', b: 'APT', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'ARBUSDT', b: 'ARB', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'OPUSDT', b: 'OP', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'INJUSDT', b: 'INJ', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'TIAUSDT', b: 'TIA', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'RENDERUSDT', b: 'RENDER', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'FETUSDT', b: 'FET', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'DOTUSDT', b: 'DOT', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'LTCUSDT', b: 'LTC', pp: 2, qp: 3, mq: 0.001 },
+      { s: 'GALAUSDT', b: 'GALA', pp: 5, qp: 0, mq: 1 },
+      { s: 'FILUSDT', b: 'FIL', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'ICPUSDT', b: 'ICP', pp: 3, qp: 2, mq: 0.01 },
+      { s: 'FTMUSDT', b: 'FTM', pp: 4, qp: 0, mq: 1 },
+      { s: 'STXUSDT', b: 'STX', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'SEIUSDT', b: 'SEI', pp: 4, qp: 0, mq: 1 },
+      { s: 'ATOMUSDT', b: 'ATOM', pp: 3, qp: 2, mq: 0.01 },
+      { s: 'WLDUSDT', b: 'WLD', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'ORDIUSDT', b: 'ORDI', pp: 3, qp: 2, mq: 0.01 },
+      { s: 'JUPUSDT', b: 'JUP', pp: 4, qp: 0, mq: 1 },
+      { s: 'PYTHUSDT', b: 'PYTH', pp: 4, qp: 0, mq: 1 },
+      { s: 'RUNEUSDT', b: 'RUNE', pp: 3, qp: 1, mq: 0.1 },
+      { s: 'FLOKIUSDT', b: '1000FLOKI', pp: 6, qp: 0, mq: 100 },
+      { s: 'BONKUSDT', b: '1000BONK', pp: 6, qp: 0, mq: 100 },
+      { s: 'TONUSDT', b: 'TON', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'TAOUSDT', b: 'TAO', pp: 2, qp: 3, mq: 0.001 },
+      { s: 'PENDLEUSDT', b: 'PENDLE', pp: 4, qp: 1, mq: 0.1 },
+      { s: 'WIFUSDT', b: 'WIF', pp: 4, qp: 1, mq: 0.1 },
+    ];
+
+    const fallbackPairs: CcxtPairInfo[] = list.map((item, idx) => ({
+      symbol: item.s,
+      ccxtSymbol: `${item.b}/USDT:USDT`,
+      baseAsset: item.b,
+      quoteAsset: 'USDT',
+      pricePrecision: item.pp,
+      quantityPrecision: item.qp,
+      minQty: item.mq,
+      lastPrice: 0,
+      priceChangePercent: 0,
+      volume24h: 10000000 - idx * 100000,
+      active: true,
+    }));
+
+    if (this.cachedPairs.length === 0) {
+      this.cachedPairs = fallbackPairs;
+    }
+    return fallbackPairs;
+  }
+
   /**
    * Fetch and index all active Binance Futures USD-M pairs (522+ pairs)
    */
   public async fetchAllUsdmPairs(): Promise<CcxtPairInfo[]> {
     const now = Date.now();
-    // Cache for 60 seconds to avoid repeating market load
-    if (this.marketsLoaded && this.cachedPairs.length > 100 && now - this.lastMarketsFetch < 60000) {
+    // Cache for 30 minutes to prevent repeating heavy market loads
+    if (this.marketsLoaded && this.cachedPairs.length > 50 && now - this.lastMarketsFetch < 1800000) {
       return this.cachedPairs;
+    }
+
+    // If currently rate limited, return cached pairs or top defaults immediately
+    if (this.isRateLimited()) {
+      console.warn(`[CCXT] Rate limit active (${this.getRateLimitRemainingSec()}s remaining). Serving cached pairs.`);
+      if (this.cachedPairs.length > 0) return this.cachedPairs;
+      return this.getDefaultTopPairs();
     }
 
     try {
       console.log('[CCXT] Loading real Binance Futures USD-M markets via public client...');
-      const markets = await this.publicClient.loadMarkets(true);
+      // Use CCXT internal cache if loaded (do not force true)
+      const markets = await this.publicClient.loadMarkets(false);
       this.cachedMarkets = markets;
 
-      // Fast single bulk call to fetch 24hr tickers for all active pairs
+      // Bulk call to fetch 24hr tickers for active pairs
       let tickers: Record<string, any> = {};
       try {
         tickers = await this.publicClient.fetchTickers();
-      } catch (tickerErr) {
-        console.warn('[CCXT] Note on bulk tickers, using individual prices:', tickerErr);
+      } catch (tickerErr: any) {
+        const msg = tickerErr?.message || String(tickerErr);
+        if (msg.includes('429') || msg.includes('-1003')) {
+          this.handleRateLimit(60000);
+        }
+        console.warn('[CCXT] Note on bulk tickers, using individual prices:', msg);
       }
 
       const pairs: CcxtPairInfo[] = [];
@@ -134,16 +229,27 @@ export class BinanceCcxtService {
         }
       }
 
-      // Sort by highest 24h trading volume
-      pairs.sort((a, b) => b.volume24h - a.volume24h);
+      if (pairs.length > 0) {
+        // Sort by highest 24h trading volume
+        pairs.sort((a, b) => b.volume24h - a.volume24h);
+        this.cachedPairs = pairs;
+        this.marketsLoaded = true;
+        this.lastMarketsFetch = now;
+        this.rateLimitHits = 0;
+        console.log(`[CCXT] Successfully indexed ${pairs.length} active Binance Futures USD-M pairs.`);
+        return pairs;
+      }
 
-      this.cachedPairs = pairs;
-      this.marketsLoaded = true;
-      this.lastMarketsFetch = now;
-      console.log(`[CCXT] Successfully indexed ${pairs.length} active Binance Futures USD-M pairs.`);
-      return pairs;
+      return this.fetchPairsViaRest();
     } catch (err: any) {
-      console.warn('[CCXT] Error loading Binance markets via CCXT, falling back to direct REST:', err?.message || err);
+      const errMsg = err?.message || String(err);
+      console.warn('[CCXT] Error loading Binance markets via CCXT, checking fallback:', errMsg);
+      if (errMsg.includes('429') || errMsg.includes('-1003')) {
+        this.handleRateLimit(60000);
+        if (this.cachedPairs.length > 0) {
+          return this.cachedPairs;
+        }
+      }
       return this.fetchPairsViaRest();
     }
   }
@@ -152,27 +258,67 @@ export class BinanceCcxtService {
    * Direct REST fallback for indexing pairs if CCXT network is restricted
    */
   private async fetchPairsViaRest(): Promise<CcxtPairInfo[]> {
-    try {
-      const [exRes, tickRes] = await Promise.all([
-        fetch('https://fapi.binance.com/fapi/v1/exchangeInfo'),
-        fetch('https://fapi.binance.com/fapi/v1/ticker/24hr'),
-      ]);
+    if (this.isRateLimited() && this.cachedPairs.length > 0) {
+      return this.cachedPairs;
+    }
 
-      const exData = await exRes.json();
-      const tickData: any[] = await tickRes.json();
+    try {
+      let exData: any = null;
+      let tickData: any = null;
+
+      try {
+        const exRes = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo');
+        if (exRes.status === 429) {
+          this.handleRateLimit(60000);
+        } else if (exRes.ok) {
+          exData = await exRes.json().catch(() => null);
+        } else {
+          const errBody = await exRes.json().catch(() => null);
+          if (errBody?.code === -1003) this.handleRateLimit(60000);
+        }
+      } catch (exErr: any) {
+        console.warn('[REST Fallback] exchangeInfo request error:', exErr?.message || exErr);
+      }
+
+      // Only attempt tickers if not rate-limited
+      if (!this.isRateLimited()) {
+        try {
+          const tickRes = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+          if (tickRes.status === 429) {
+            this.handleRateLimit(60000);
+          } else if (tickRes.ok) {
+            tickData = await tickRes.json().catch(() => null);
+          } else {
+            const errBody = await tickRes.json().catch(() => null);
+            if (errBody?.code === -1003) this.handleRateLimit(60000);
+          }
+        } catch (tickErr: any) {
+          console.warn('[REST Fallback] ticker/24hr request error:', tickErr?.message || tickErr);
+        }
+      }
+
       const tickMap = new Map<string, any>();
-      tickData.forEach((t) => tickMap.set(t.symbol, t));
+      // CRITICAL FIX: Guard tickData: verify Array.isArray to prevent "tickData.forEach is not a function"
+      if (Array.isArray(tickData)) {
+        tickData.forEach((t) => {
+          if (t && t.symbol) {
+            tickMap.set(t.symbol, t);
+          }
+        });
+      }
 
       const pairs: CcxtPairInfo[] = [];
-      for (const s of exData.symbols || []) {
+      const symbolsList = exData && Array.isArray(exData.symbols) ? exData.symbols : [];
+
+      for (const s of symbolsList) {
         if (s.contractType === 'PERPETUAL' && s.status === 'TRADING' && s.quoteAsset === 'USDT') {
           const ticker = tickMap.get(s.symbol);
-          const lastPrice = ticker ? parseFloat(ticker.lastPrice) : 0;
-          const priceChange = ticker ? parseFloat(ticker.priceChangePercent) : 0;
-          const quoteVol = ticker ? parseFloat(ticker.quoteVolume) : 0;
+          const lastPrice = ticker ? parseFloat(ticker.lastPrice) || 0 : 0;
+          const priceChange = ticker ? parseFloat(ticker.priceChangePercent) || 0 : 0;
+          const quoteVol = ticker ? parseFloat(ticker.quoteVolume) || 0 : 0;
 
           const lotSize = s.filters?.find((f: any) => f.filterType === 'LOT_SIZE');
-          const minQty = lotSize ? parseFloat(lotSize.minQty) : 0.001;
+          const minQty = lotSize ? parseFloat(lotSize.minQty) || 0.001 : 0.001;
 
           pairs.push({
             symbol: s.symbol,
@@ -190,14 +336,23 @@ export class BinanceCcxtService {
         }
       }
 
-      pairs.sort((a, b) => b.volume24h - a.volume24h);
-      this.cachedPairs = pairs;
-      this.marketsLoaded = true;
-      this.lastMarketsFetch = Date.now();
-      return pairs;
+      if (pairs.length > 0) {
+        pairs.sort((a, b) => b.volume24h - a.volume24h);
+        this.cachedPairs = pairs;
+        this.marketsLoaded = true;
+        this.lastMarketsFetch = Date.now();
+        console.log(`[REST Fallback] Successfully indexed ${pairs.length} Binance USD-M pairs.`);
+        return pairs;
+      }
+
+      if (this.cachedPairs.length > 0) {
+        return this.cachedPairs;
+      }
+      return this.getDefaultTopPairs();
     } catch (restErr: any) {
       console.error('[REST Fallback] Error fetching pairs:', restErr?.message || restErr);
-      return this.cachedPairs;
+      if (this.cachedPairs.length > 0) return this.cachedPairs;
+      return this.getDefaultTopPairs();
     }
   }
 
@@ -205,9 +360,15 @@ export class BinanceCcxtService {
    * Fetch Real Live OHLCV Candlestick data from Binance Futures via CCXT / Public REST
    */
   public async fetchKlines(symbol: string, timeframe: string = '5m', limit: number = 70): Promise<Candle[]> {
+    if (this.isRateLimited()) {
+      return [];
+    }
+
     try {
       const ccxtSymbol = this.toCcxtSymbol(symbol);
       const ohlcv = await this.publicClient.fetchOHLCV(ccxtSymbol, timeframe, undefined, limit);
+
+      if (!Array.isArray(ohlcv)) return [];
 
       return ohlcv.map((item: any[]) => ({
         time: item[0],
@@ -218,19 +379,37 @@ export class BinanceCcxtService {
         volume: item[5],
       }));
     } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('429') || errMsg.includes('-1003')) {
+        this.handleRateLimit(60000);
+        return [];
+      }
+
       // Fallback directly to Binance Futures public REST
-      const restUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`;
-      const res = await fetch(restUrl);
-      if (!res.ok) throw new Error(`Binance klines failed for ${symbol}`);
-      const raw: any[][] = await res.json();
-      return raw.map((item) => ({
-        time: item[0],
-        open: parseFloat(item[1]),
-        high: parseFloat(item[2]),
-        low: parseFloat(item[3]),
-        close: parseFloat(item[4]),
-        volume: parseFloat(item[5]),
-      }));
+      try {
+        const restUrl = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${timeframe}&limit=${limit}`;
+        const res = await fetch(restUrl);
+        if (res.status === 429) {
+          this.handleRateLimit(60000);
+          return [];
+        }
+        if (!res.ok) return [];
+        const raw = await res.json().catch(() => null);
+        if (!Array.isArray(raw)) {
+          if (raw?.code === -1003) this.handleRateLimit(60000);
+          return [];
+        }
+        return raw.map((item) => ({
+          time: item[0],
+          open: parseFloat(item[1]),
+          high: parseFloat(item[2]),
+          low: parseFloat(item[3]),
+          close: parseFloat(item[4]),
+          volume: parseFloat(item[5]),
+        }));
+      } catch {
+        return [];
+      }
     }
   }
 
@@ -238,15 +417,45 @@ export class BinanceCcxtService {
    * Fetch single real-time ticker price
    */
   public async fetchTickerPrice(symbol: string): Promise<number> {
+    if (this.isRateLimited()) {
+      const p = this.cachedPairs.find((cp) => cp.symbol === symbol);
+      return p?.lastPrice || 0;
+    }
+
     try {
       const ccxtSymbol = this.toCcxtSymbol(symbol);
       const ticker = await this.publicClient.fetchTicker(ccxtSymbol);
-      return ticker.last || ticker.close || 0;
-    } catch {
+      const price = ticker.last || ticker.close || 0;
+      if (price > 0) {
+        const p = this.cachedPairs.find((cp) => cp.symbol === symbol);
+        if (p) p.lastPrice = price;
+      }
+      return price;
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('429') || errMsg.includes('-1003')) {
+        this.handleRateLimit(60000);
+        const p = this.cachedPairs.find((cp) => cp.symbol === symbol);
+        return p?.lastPrice || 0;
+      }
+
       try {
         const res = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
-        const data = await res.json();
-        return parseFloat(data.price);
+        if (res.status === 429) {
+          this.handleRateLimit(60000);
+          return 0;
+        }
+        const data = await res.json().catch(() => null);
+        if (data?.code === -1003) {
+          this.handleRateLimit(60000);
+          return 0;
+        }
+        const parsed = parseFloat(data?.price || '0');
+        if (parsed > 0) {
+          const p = this.cachedPairs.find((cp) => cp.symbol === symbol);
+          if (p) p.lastPrice = parsed;
+        }
+        return parsed;
       } catch {
         return 0;
       }
