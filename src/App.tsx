@@ -19,6 +19,12 @@ import {
   BotSettings,
 } from './types/trading';
 import { CcxtPairInfo } from './services/binanceCcxtService';
+import { analyzeSMC } from './services/technicalAnalysis';
+import {
+  fetchTradesFromSupabase,
+  fetchSignalsFromSupabase,
+  fetchLogsFromSupabase,
+} from './services/supabaseClient';
 import {
   Terminal,
   Radio,
@@ -126,54 +132,172 @@ export default function App() {
     setIsCleanupModalOpen(true);
   };
 
-  // Fetch Bot Status and Positions
+  // Fetch Bot Status and Positions (with Supabase fallback for Vercel/Static hosting)
   const fetchBotStatus = useCallback(async () => {
+    let handled = false;
     try {
       const res = await fetch('/api/bot/status', {
         headers: { Accept: 'application/json' },
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (!res.ok || !ct.includes('application/json')) return;
-      const data = await res.json();
-      if (data.status) setStatus(data.status);
-      if (data.settings) setSettings(data.settings);
-      if (data.activePositions) setOpenPositions(data.activePositions);
-      if (data.closedPositions) setClosedPositions(data.closedPositions);
-      if (data.signals) setSignals(data.signals);
-      if (data.logs) setLogs(data.logs);
+      }).catch(() => null);
+
+      if (res && res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.status) setStatus(data.status);
+          if (data.settings) setSettings(data.settings);
+          if (data.activePositions) setOpenPositions(data.activePositions);
+          if (data.closedPositions) setClosedPositions(data.closedPositions);
+          if (data.signals) setSignals(data.signals);
+          if (data.logs) setLogs(data.logs);
+          handled = true;
+        }
+      }
     } catch (err) {
       console.warn('Bot status fetch poll note:', err);
     }
-  }, []);
 
-  // Fetch Candles & SMC for Selected Symbol
-  const fetchKlines = useCallback(async (sym: string, tf: string) => {
-    try {
-      const res = await fetch(`/api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(tf)}&limit=70`, {
-        headers: { Accept: 'application/json' },
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (!res.ok || !ct.includes('application/json')) return;
-      const data = await res.json();
-      if (data.klines) setCandles(data.klines);
-      if (data.analysis) setAnalysis(data.analysis);
-    } catch (err) {
-      console.warn('Klines fetch poll note:', err);
+    // Direct Supabase Fallback when running on Vercel or when local Express backend is not reached
+    if (!handled) {
+      try {
+        const [tradesDb, signalsDb, logsDb] = await Promise.all([
+          fetchTradesFromSupabase(),
+          fetchSignalsFromSupabase(30),
+          fetchLogsFromSupabase(40),
+        ]);
+
+        if (tradesDb.open.length > 0 || tradesDb.history.length > 0) {
+          setOpenPositions(tradesDb.open);
+          setClosedPositions(tradesDb.history);
+          const totalWins = tradesDb.history.filter((p) => p.status === 'WIN').length;
+          const totalLosses = tradesDb.history.filter((p) => p.status === 'LOSS').length;
+          const totalClosed = totalWins + totalLosses;
+          const winRate = totalClosed > 0 ? Math.round((totalWins / totalClosed) * 100) : 0;
+          const netPnl = tradesDb.history.reduce((sum, p) => sum + (p.realizedPnl || 0), 0);
+
+          setStatus((prev) => ({
+            ...prev,
+            activePositionsCount: tradesDb.open.length,
+            totalTrades: tradesDb.open.length + tradesDb.history.length,
+            totalWins,
+            totalLosses,
+            winRate,
+            netPnl: Math.round(netPnl * 100) / 100,
+          }));
+        }
+        if (signalsDb.length > 0) setSignals(signalsDb);
+        if (logsDb.length > 0) setLogs(logsDb);
+      } catch (dbErr) {
+        console.warn('Direct Supabase fetch fallback note:', dbErr);
+      }
     }
   }, []);
 
-  // Fetch Binance USD-M Pairs
+  // Fetch Candles & SMC for Selected Symbol (with direct Binance USD-M public REST fallback for Vercel)
+  const fetchKlines = useCallback(async (sym: string, tf: string) => {
+    // 1. Try local Express backend first
+    try {
+      const res = await fetch(`/api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(tf)}&limit=70`, {
+        headers: { Accept: 'application/json' },
+      }).catch(() => null);
+
+      if (res && res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.klines && data.klines.length > 0) {
+            setCandles(data.klines);
+            if (data.analysis) setAnalysis(data.analysis);
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Backend klines fetch note, trying direct Binance public API:', err);
+    }
+
+    // 2. Direct Fallback to Binance USD-M Public REST API (Fixes Vercel static deployments!)
+    try {
+      const directRes = await fetch(
+        `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(tf)}&limit=70`
+      );
+      if (directRes.ok) {
+        const raw = await directRes.json();
+        if (Array.isArray(raw) && raw.length > 0) {
+          const mappedCandles: Candle[] = raw.map((k: any) => ({
+            time: Math.floor(k[0] / 1000),
+            open: parseFloat(k[1]),
+            high: parseFloat(k[2]),
+            low: parseFloat(k[3]),
+            close: parseFloat(k[4]),
+            volume: parseFloat(k[5]),
+          }));
+          setCandles(mappedCandles);
+          const smc = analyzeSMC(sym, mappedCandles);
+          setAnalysis(smc);
+        }
+      }
+    } catch (directErr) {
+      console.warn('Direct Binance klines fallback note:', directErr);
+    }
+  }, []);
+
+  // Fetch Binance USD-M Pairs (with direct Binance 24hr ticker fallback for Vercel)
   const fetchPairs = useCallback(async () => {
+    // 1. Try local Express backend first
     try {
       const res = await fetch('/api/binance/pairs', {
         headers: { Accept: 'application/json' },
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (!res.ok || !ct.includes('application/json')) return;
-      const data = await res.json();
-      setPairs(data);
+      }).catch(() => null);
+
+      if (res && res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setPairs(data);
+            return;
+          }
+        }
+      }
     } catch (err) {
-      console.warn('Pairs fetch poll note:', err);
+      console.warn('Backend pairs fetch note, trying direct Binance public API:', err);
+    }
+
+    // 2. Direct Fallback to Binance USD-M 24hr Ticker API (Fixes Vercel static deployments!)
+    try {
+      const directRes = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
+      if (directRes.ok) {
+        const raw = await directRes.json();
+        if (Array.isArray(raw)) {
+          const usdtPairs: CcxtPairInfo[] = raw
+            .filter((t: any) => t.symbol && t.symbol.endsWith('USDT'))
+            .map((t: any) => ({
+              symbol: t.symbol,
+              ccxtSymbol: `${t.symbol.replace('USDT', '')}/USDT:USDT`,
+              baseAsset: t.symbol.replace('USDT', ''),
+              quoteAsset: 'USDT',
+              pricePrecision: 2,
+              quantityPrecision: 3,
+              minQty: 0.001,
+              lastPrice: parseFloat(t.lastPrice) || 0,
+              priceChangePercent: parseFloat(t.priceChangePercent) || 0,
+              volume24h: parseFloat(t.quoteVolume) || 0,
+              active: true,
+            }))
+            .sort((a, b) => b.volume24h - a.volume24h);
+
+          if (usdtPairs.length > 0) {
+            setPairs(usdtPairs);
+            setStatus((prev) => ({
+              ...prev,
+              monitoredPairsCount: usdtPairs.length,
+            }));
+          }
+        }
+      }
+    } catch (pairErr) {
+      console.warn('Direct Binance pairs fallback note:', pairErr);
     }
   }, []);
 

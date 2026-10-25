@@ -241,6 +241,66 @@ export async function fetchTradesFromSupabase(): Promise<{
 }
 
 /**
+ * Fetch latest signals from Supabase
+ */
+export async function fetchSignalsFromSupabase(limit: number = 30): Promise<TradeSignal[]> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from('signals')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error || !data) return [];
+    return data.map((s: any) => ({
+      id: s.id,
+      symbol: s.symbol,
+      side: s.side,
+      timeframe: s.timeframe || '5m',
+      price: parseFloat(s.price),
+      entryZoneMin: parseFloat(s.entry_zone_min || s.price),
+      entryZoneMax: parseFloat(s.entry_zone_max || s.price),
+      stopLoss: parseFloat(s.stop_loss),
+      takeProfit: parseFloat(s.take_profit),
+      smcPattern: s.smc_pattern,
+      divergencePattern: s.divergence_pattern,
+      geminiConfidence: parseFloat(s.gemini_confidence || 0),
+      geminiReasoning: s.gemini_reasoning,
+      confluenceScore: parseFloat(s.confluence_score || 0),
+      status: s.status,
+      timestamp: new Date(s.created_at).getTime(),
+      source: s.source || 'SCANNER',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch latest logs from Supabase
+ */
+export async function fetchLogsFromSupabase(limit: number = 40): Promise<{ time: string; message: string; type: string }[]> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from('bot_logs')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error || !data) return [];
+    return data.map((l: any) => ({
+      time: new Date(l.created_at).toLocaleTimeString(),
+      message: l.message,
+      type: l.level === 'ERROR' ? 'warn' : l.level === 'TRADE' ? 'trade' : l.level === 'INFO' ? 'info' : 'success',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Option 1 (Safe Mode): Delete unexecuted signals and logs from Supabase
  * Only deletes signals with status != 'EXECUTED'.
  * STRICT SAFETY GUARD: Active OPEN positions and the trades table are 100% untouched.
