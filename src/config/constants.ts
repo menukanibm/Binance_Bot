@@ -24,11 +24,11 @@ export const CONFIG = {
   // Binance Futures Production Credentials
   BINANCE_API_KEY:
     process.env.BINANCE_API_KEY ||
-    'ppY05iFRtcqV4XwU5aGUEYi3gJxmMzAf7npGCB5Zla3MhxwrRpn0g0EqxAh7BrCV1',
+    'MXFNZcJLg23OFN1JtKE5v0OOlNaNXnhmcFf6XNxMdGZnix6E5rU99YEgRDZDLaOj',
   BINANCE_SECRET_KEY:
     process.env.BINANCE_SECRET_KEY ||
     process.env.BINANCE_API_SECRET ||
-    'QOzz9MegGURyeFxJfJHscPq2MRsoqnJ3Ka35c0BcsMhEMKsAZYZbE5XgPsbC1vi8',
+    'TGeZ9tGjg8ILSCw65FOlRFC6xVuSmI5CMaWUUZGoLZ8vYLVc7w2fqWgC1ek7xFNI',
   BINANCE_TESTNET:
     process.env.BINANCE_TESTNET === 'true' ? true : false,
 
