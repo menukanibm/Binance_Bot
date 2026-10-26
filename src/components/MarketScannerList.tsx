@@ -7,18 +7,42 @@ import {
   TrendingDown,
   RefreshCw,
   Sparkles,
-  ExternalLink,
 } from 'lucide-react';
 
 interface MarketScannerListProps {
-  pairs: (CcxtPairInfo | BinancePairInfo)[];
+  pairs?: (CcxtPairInfo | BinancePairInfo)[];
   onSelectSymbol: (symbol: string) => void;
   onScanPair: (symbol: string) => void;
   selectedSymbol: string;
 }
 
+const formatScannerPrice = (price: number, precision?: number): string => {
+  if (typeof price !== 'number' || isNaN(price)) return '$0.00';
+  try {
+    let maxDigits = 4;
+    if (typeof precision === 'number' && !isNaN(precision) && precision >= 0) {
+      maxDigits = Math.min(8, Math.floor(precision));
+    } else if (price < 0.0001) {
+      maxDigits = 8;
+    } else if (price < 0.01) {
+      maxDigits = 6;
+    } else if (price < 1) {
+      maxDigits = 4;
+    } else {
+      maxDigits = 2;
+    }
+    const minDigits = Math.min(2, maxDigits);
+    return '$' + price.toLocaleString(undefined, {
+      minimumFractionDigits: minDigits,
+      maximumFractionDigits: Math.max(minDigits, maxDigits),
+    });
+  } catch {
+    return '$' + price.toFixed(2);
+  }
+};
+
 export const MarketScannerList: React.FC<MarketScannerListProps> = ({
-  pairs,
+  pairs = [],
   onSelectSymbol,
   onScanPair,
   selectedSymbol,
@@ -26,11 +50,15 @@ export const MarketScannerList: React.FC<MarketScannerListProps> = ({
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'ALL' | 'GAINERS' | 'LOSERS'>('ALL');
 
-  const filteredPairs = pairs.filter((p) => {
+  const safePairs = Array.isArray(pairs) ? pairs : [];
+
+  const filteredPairs = safePairs.filter((p) => {
+    if (!p || !p.symbol) return false;
     const matchesSearch = p.symbol.toLowerCase().includes(search.toLowerCase());
     if (!matchesSearch) return false;
-    if (filter === 'GAINERS') return p.priceChangePercent > 0;
-    if (filter === 'LOSERS') return p.priceChangePercent < 0;
+    const change = p.priceChangePercent ?? 0;
+    if (filter === 'GAINERS') return change > 0;
+    if (filter === 'LOSERS') return change < 0;
     return true;
   });
 
@@ -79,9 +107,13 @@ export const MarketScannerList: React.FC<MarketScannerListProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/60">
-            {filteredPairs.slice(0, 25).map((p) => {
-              const isGain = p.priceChangePercent >= 0;
+            {filteredPairs.slice(0, 30).map((p) => {
+              if (!p) return null;
+              const priceChange = p.priceChangePercent ?? 0;
+              const isGain = priceChange >= 0;
               const isSelected = p.symbol === selectedSymbol;
+              const lastPrice = p.lastPrice ?? 0;
+              const volume = p.volume24h ?? 0;
 
               return (
                 <tr
@@ -98,10 +130,7 @@ export const MarketScannerList: React.FC<MarketScannerListProps> = ({
                   </td>
 
                   <td className="py-2.5 px-3 text-slate-200">
-                    ${p.lastPrice.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: p.pricePrecision || 4,
-                    })}
+                    {formatScannerPrice(lastPrice, 'pricePrecision' in p ? p.pricePrecision : undefined)}
                   </td>
 
                   <td className="py-2.5 px-3">
@@ -116,12 +145,12 @@ export const MarketScannerList: React.FC<MarketScannerListProps> = ({
                         <TrendingDown className="w-3 h-3" />
                       )}
                       {isGain ? '+' : ''}
-                      {p.priceChangePercent.toFixed(2)}%
+                      {priceChange.toFixed(2)}%
                     </span>
                   </td>
 
                   <td className="py-2.5 px-3 text-slate-400">
-                    ${(p.volume24h / 1000000).toFixed(1)}M
+                    ${(volume / 1000000).toFixed(1)}M
                   </td>
 
                   <td className="py-2.5 px-3 text-right">
@@ -130,7 +159,7 @@ export const MarketScannerList: React.FC<MarketScannerListProps> = ({
                         e.stopPropagation();
                         onScanPair(p.symbol);
                       }}
-                      className="px-2 py-1 rounded bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 border border-slate-700 text-[10px] font-semibold transition inline-flex items-center gap-1"
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-amber-500 hover:text-slate-950 text-slate-300 border border-slate-700 text-[10px] font-semibold transition inline-flex items-center gap-1 cursor-pointer"
                     >
                       <Sparkles className="w-2.5 h-2.5" />
                       <span>SMC Scan</span>

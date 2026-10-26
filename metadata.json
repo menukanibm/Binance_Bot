@@ -1,6 +1,6 @@
 {
-  "name": "Binance SMC AI Auto-Trading Engine",
-  "description": "100% Fully Automated Binance Futures USD-M trading bot featuring SMC (Order Blocks, FVGs, Sweeps), RSI/MACD Divergence scanner, and Gemini AI deep validation.",
+  "name": "Makka Smart Execution",
+  "description": "100% Automated Binance Futures USD-M trading bot featuring SMC Order Blocks, Elliott Wave Theory, RSI/MACD Divergence scanner, and Gemini AI deep validation.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

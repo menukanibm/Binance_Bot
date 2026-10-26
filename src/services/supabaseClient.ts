@@ -168,6 +168,8 @@ export async function saveSignalToSupabase(signal: TradeSignal): Promise<boolean
       take_profit: signal.takeProfit,
       smc_pattern: signal.smcPattern,
       divergence_pattern: signal.divergencePattern,
+      elliott_wave_pattern: signal.elliottWavePattern,
+      skip_reason: signal.skipReason,
       gemini_confidence: signal.geminiConfidence,
       gemini_reasoning: signal.geminiReasoning,
       confluence_score: signal.confluenceScore,
@@ -183,6 +185,38 @@ export async function saveSignalToSupabase(signal: TradeSignal): Promise<boolean
     return true;
   } catch (err: any) {
     logSupabaseSyncNotice('Save Signal Exception', err);
+    return false;
+  }
+}
+
+/**
+ * Save skipped / ineligible signal to Supabase
+ */
+export async function saveIneligibleSignalToSupabase(ineligible: any): Promise<boolean> {
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.from('ineligible_signals').upsert({
+      id: ineligible.id,
+      symbol: ineligible.symbol,
+      side: ineligible.side,
+      price: ineligible.price,
+      reason_category: ineligible.reasonCategory,
+      detailed_reason: ineligible.detailedReason,
+      required_capital_usdt: ineligible.requiredCapitalUsdt,
+      available_capital_usdt: ineligible.availableCapitalUsdt,
+      confidence: ineligible.confidence,
+      elliott_wave_summary: ineligible.elliottWaveSummary,
+      smc_summary: ineligible.smcSummary,
+      created_at: new Date(ineligible.timestamp).toISOString(),
+    });
+
+    if (error) {
+      logSupabaseSyncNotice('Save Ineligible Signal', error);
+      return false;
+    }
+    return true;
+  } catch (err: any) {
+    logSupabaseSyncNotice('Save Ineligible Signal Exception', err);
     return false;
   }
 }
@@ -500,7 +534,7 @@ export async function checkSupabaseConnection(): Promise<{
  * Complete Production SQL migration schema for Supabase
  */
 export const SUPABASE_SQL_SCHEMA = `-- ==============================================================================
--- BINANCE SMC AI AUTO-TRADING ENGINE - COMPLETE SUPABASE MIGRATION
+-- MAKKA SMART EXECUTION - COMPLETE SUPABASE POSTGRESQL MIGRATION
 -- Project URL: https://geoamvgfucsnegxkktg.supabase.co
 -- Paste directly into Supabase SQL Editor: https://supabase.com/dashboard/project/geoamvgfucsnegxkktg/sql
 -- ==============================================================================
@@ -520,10 +554,12 @@ CREATE TABLE IF NOT EXISTS public.signals (
     take_profit NUMERIC NOT NULL,
     smc_pattern TEXT,
     divergence_pattern TEXT,
+    elliott_wave_pattern TEXT,
+    skip_reason TEXT,
     gemini_confidence INTEGER NOT NULL CHECK (gemini_confidence >= 0 AND gemini_confidence <= 100),
     gemini_reasoning TEXT,
     confluence_score INTEGER NOT NULL CHECK (confluence_score >= 0 AND confluence_score <= 100),
-    status TEXT NOT NULL CHECK (status IN ('PENDING_VALIDATION', 'APPROVED', 'REJECTED', 'EXECUTED')),
+    status TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'SCANNER' CHECK (source IN ('SCANNER', 'WEBHOOK')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -547,7 +583,7 @@ CREATE TABLE IF NOT EXISTS public.trades (
     realized_pnl_percent NUMERIC NOT NULL DEFAULT 0,
     close_price NUMERIC,
     close_reason TEXT,
-    signal_id TEXT REFERENCES public.signals(id) ON DELETE SET NULL,
+    signal_id TEXT,
     source TEXT NOT NULL DEFAULT 'SCANNER' CHECK (source IN ('SCANNER', 'WEBHOOK')),
     binance_order_id TEXT,
     binance_sl_order_id TEXT,
@@ -558,7 +594,23 @@ CREATE TABLE IF NOT EXISTS public.trades (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 3. TABLE: bot_logs (Engine Activity & Telemetry Stream)
+-- 3. TABLE: ineligible_signals (Skipped signals due to capital, AI score or risk rules)
+CREATE TABLE IF NOT EXISTS public.ineligible_signals (
+    id TEXT PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+    price NUMERIC NOT NULL,
+    reason_category TEXT NOT NULL,
+    detailed_reason TEXT NOT NULL,
+    required_capital_usdt NUMERIC,
+    available_capital_usdt NUMERIC,
+    confidence INTEGER NOT NULL,
+    elliott_wave_summary TEXT,
+    smc_summary TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 4. TABLE: bot_logs (Engine Activity & Telemetry Stream)
 CREATE TABLE IF NOT EXISTS public.bot_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     level TEXT NOT NULL DEFAULT 'info' CHECK (level IN ('info', 'success', 'warn', 'error', 'trade')),
@@ -568,18 +620,20 @@ CREATE TABLE IF NOT EXISTS public.bot_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 4. TABLE: bot_settings (Engine State, Capital & Risk Parameters)
+-- 5. TABLE: bot_settings (Engine State, Capital & Risk Parameters)
 CREATE TABLE IF NOT EXISTS public.bot_settings (
     id TEXT PRIMARY KEY DEFAULT 'default',
     auto_trading BOOLEAN NOT NULL DEFAULT true,
     scan_interval_minutes INTEGER NOT NULL DEFAULT 2 CHECK (scan_interval_minutes >= 1),
     leverage INTEGER NOT NULL DEFAULT 10 CHECK (leverage >= 1 AND leverage <= 125),
     risk_percentage NUMERIC NOT NULL DEFAULT 2.0 CHECK (risk_percentage > 0 AND risk_percentage <= 100),
+    position_capital_percent NUMERIC NOT NULL DEFAULT 10.0,
     gemini_threshold INTEGER NOT NULL DEFAULT 80 CHECK (gemini_threshold >= 50 AND gemini_threshold <= 100),
     trading_mode TEXT NOT NULL DEFAULT 'LIVE' CHECK (trading_mode IN ('PAPER', 'TESTNET', 'LIVE')),
     default_sl_percent NUMERIC NOT NULL DEFAULT 1.0,
     default_tp_percent NUMERIC NOT NULL DEFAULT 2.0,
     account_balance NUMERIC NOT NULL DEFAULT 0.0,
+    free_usdt NUMERIC NOT NULL DEFAULT 0.0,
     net_pnl NUMERIC NOT NULL DEFAULT 0.0,
     win_rate NUMERIC NOT NULL DEFAULT 0.0,
     total_trades INTEGER NOT NULL DEFAULT 0,
@@ -589,12 +643,14 @@ CREATE TABLE IF NOT EXISTS public.bot_settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Seed default settings row
-INSERT INTO public.bot_settings (id, auto_trading, scan_interval_minutes, leverage, risk_percentage, gemini_threshold, trading_mode)
-VALUES ('default', true, 2, 10, 2.0, 80, 'LIVE')
-ON CONFLICT (id) DO NOTHING;
+-- Seed default settings row idempotently
+INSERT INTO public.bot_settings (id, auto_trading, scan_interval_minutes, leverage, risk_percentage, position_capital_percent, gemini_threshold, trading_mode)
+VALUES ('default', true, 2, 10, 2.0, 10.0, 80, 'LIVE')
+ON CONFLICT (id) DO UPDATE SET
+    auto_trading = EXCLUDED.auto_trading,
+    position_capital_percent = EXCLUDED.position_capital_percent;
 
--- 5. PERFORMANCE INDEXES
+-- 6. PERFORMANCE INDEXES
 CREATE INDEX IF NOT EXISTS idx_trades_status ON public.trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON public.trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_opened_at ON public.trades(opened_at DESC);
@@ -604,10 +660,13 @@ CREATE INDEX IF NOT EXISTS idx_signals_created_at ON public.signals(created_at D
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON public.signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_status ON public.signals(status);
 
+CREATE INDEX IF NOT EXISTS idx_ineligible_created_at ON public.ineligible_signals(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ineligible_symbol ON public.ineligible_signals(symbol);
+
 CREATE INDEX IF NOT EXISTS idx_bot_logs_created_at ON public.bot_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bot_logs_level ON public.bot_logs(level);
 
--- 6. AUTO-UPDATE UPDATED_AT TRIGGER
+-- 7. AUTO-UPDATE UPDATED_AT TRIGGER
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -626,9 +685,10 @@ CREATE TRIGGER trg_bot_settings_updated_at
 BEFORE UPDATE ON public.bot_settings
 FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
--- 7. ROW LEVEL SECURITY (RLS) POLICIES
+-- 8. ROW LEVEL SECURITY (RLS) POLICIES
 ALTER TABLE public.signals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.trades ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ineligible_signals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bot_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.bot_settings ENABLE ROW LEVEL SECURITY;
 
@@ -641,6 +701,10 @@ DROP POLICY IF EXISTS "service_role_full_access_trades" ON public.trades;
 CREATE POLICY "service_role_full_access_trades" ON public.trades
     FOR ALL TO service_role USING (true) WITH CHECK (true);
 
+DROP POLICY IF EXISTS "service_role_full_access_ineligible" ON public.ineligible_signals;
+CREATE POLICY "service_role_full_access_ineligible" ON public.ineligible_signals
+    FOR ALL TO service_role USING (true) WITH CHECK (true);
+
 DROP POLICY IF EXISTS "service_role_full_access_logs" ON public.bot_logs;
 CREATE POLICY "service_role_full_access_logs" ON public.bot_logs
     FOR ALL TO service_role USING (true) WITH CHECK (true);
@@ -649,42 +713,7 @@ DROP POLICY IF EXISTS "service_role_full_access_settings" ON public.bot_settings
 CREATE POLICY "service_role_full_access_settings" ON public.bot_settings
     FOR ALL TO service_role USING (true) WITH CHECK (true);
 
--- Frontend & Webhook (anon & authenticated): Read access + Webhook insert
-DROP POLICY IF EXISTS "public_read_signals" ON public.signals;
-CREATE POLICY "public_read_signals" ON public.signals
-    FOR SELECT TO anon, authenticated USING (true);
-
-DROP POLICY IF EXISTS "public_read_trades" ON public.trades;
-CREATE POLICY "public_read_trades" ON public.trades
-    FOR SELECT TO anon, authenticated USING (true);
-
-DROP POLICY IF EXISTS "public_read_logs" ON public.bot_logs;
-CREATE POLICY "public_read_logs" ON public.bot_logs
-    FOR SELECT TO anon, authenticated USING (true);
-
-DROP POLICY IF EXISTS "public_read_settings" ON public.bot_settings;
-CREATE POLICY "public_read_settings" ON public.bot_settings
-    FOR SELECT TO anon, authenticated USING (true);
-
-DROP POLICY IF EXISTS "public_insert_webhook_signals" ON public.signals;
-CREATE POLICY "public_insert_webhook_signals" ON public.signals
-    FOR INSERT TO anon, authenticated WITH CHECK (true);
-
-DROP POLICY IF EXISTS "public_update_settings" ON public.bot_settings;
-CREATE POLICY "public_update_settings" ON public.bot_settings
-    FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
-
--- 8. TABLE PRIVILEGES & SCHEMA GRANTS (CRITICAL: Fixes 'permission denied for table trades')
-GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
-GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO postgres, anon, authenticated, service_role;
-
--- Direct full access policies for anon & authenticated roles
+-- Frontend & Webhook (anon & authenticated): Read and Write access
 DROP POLICY IF EXISTS "anon_full_access_trades" ON public.trades;
 CREATE POLICY "anon_full_access_trades" ON public.trades
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
@@ -693,7 +722,35 @@ DROP POLICY IF EXISTS "anon_full_access_signals" ON public.signals;
 CREATE POLICY "anon_full_access_signals" ON public.signals
     FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 
--- 9. SUPABASE REALTIME REPLICATION
+DROP POLICY IF EXISTS "anon_full_access_ineligible" ON public.ineligible_signals;
+CREATE POLICY "anon_full_access_ineligible" ON public.ineligible_signals
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_full_access_logs" ON public.bot_logs;
+CREATE POLICY "anon_full_access_logs" ON public.bot_logs
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_full_access_settings" ON public.bot_settings;
+CREATE POLICY "anon_full_access_settings" ON public.bot_settings
+    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+-- 9. TABLE PRIVILEGES & SCHEMA GRANTS (CRITICAL: Fixes 'permission denied for table trades')
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+
+GRANT ALL ON public.trades TO anon, authenticated;
+GRANT ALL ON public.signals TO anon, authenticated;
+GRANT ALL ON public.ineligible_signals TO anon, authenticated;
+GRANT ALL ON public.bot_logs TO anon, authenticated;
+GRANT ALL ON public.bot_settings TO anon, authenticated;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO postgres, anon, authenticated, service_role;
+
+-- 10. SUPABASE REALTIME REPLICATION
 DO $$
 BEGIN
     IF EXISTS (
@@ -701,6 +758,7 @@ BEGIN
     ) THEN
         ALTER PUBLICATION supabase_realtime ADD TABLE public.signals;
         ALTER PUBLICATION supabase_realtime ADD TABLE public.trades;
+        ALTER PUBLICATION supabase_realtime ADD TABLE public.ineligible_signals;
         ALTER PUBLICATION supabase_realtime ADD TABLE public.bot_logs;
         ALTER PUBLICATION supabase_realtime ADD TABLE public.bot_settings;
     END IF;
@@ -710,7 +768,7 @@ END $$;
 `;
 
 /**
- * 3-Line Quick SQL command to fix "permission denied for table trades" in Supabase SQL Editor
+ * Quick SQL command to fix "permission denied for table trades" in Supabase SQL Editor
  */
 export const SUPABASE_QUICK_FIX_SQL = `-- RUN THIS QUICK FIX IN SUPABASE SQL EDITOR TO INSTANTLY RESOLVE PERMISSION DENIED:
 GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
@@ -719,8 +777,20 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authen
 GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
 
+GRANT ALL ON public.trades TO anon, authenticated;
+GRANT ALL ON public.signals TO anon, authenticated;
+GRANT ALL ON public.bot_logs TO anon, authenticated;
+GRANT ALL ON public.bot_settings TO anon, authenticated;
+
 DROP POLICY IF EXISTS "anon_full_access_trades" ON public.trades;
 CREATE POLICY "anon_full_access_trades" ON public.trades FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
 DROP POLICY IF EXISTS "anon_full_access_signals" ON public.signals;
 CREATE POLICY "anon_full_access_signals" ON public.signals FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_full_access_logs" ON public.bot_logs;
+CREATE POLICY "anon_full_access_logs" ON public.bot_logs FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_full_access_settings" ON public.bot_settings;
+CREATE POLICY "anon_full_access_settings" ON public.bot_settings FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
 `;

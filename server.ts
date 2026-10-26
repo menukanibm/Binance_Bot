@@ -4,10 +4,11 @@ import path from 'path';
 import fs from 'fs';
 import http from 'http';
 import { fileURLToPath } from 'url';
+import ccxt from 'ccxt';
 import { tradingEngine } from './src/services/tradingEngine';
 import { binanceCcxt } from './src/services/binanceCcxtService';
 import { analyzeSMC } from './src/services/technicalAnalysis';
-import { validateTradeWithGemini } from './src/services/geminiValidator';
+import { validateTradeWithGemini, setCustomGeminiApiKey } from './src/services/geminiValidator';
 import { checkSupabaseConnection, SUPABASE_SQL_SCHEMA, SUPABASE_QUICK_FIX_SQL } from './src/services/supabaseClient';
 
 dotenv.config();
@@ -133,16 +134,20 @@ async function createServer(customPort?: number) {
   });
 
   // -------------------------------------------------------------
-  // Bot Telemetry & Status APIs
+  // Bot Telemetry & Status APIs (Synced with Binance USD-M /fapi/v2/account & /fapi/v2/positionRisk)
   // -------------------------------------------------------------
-  const handleBotStatus = (req: Request, res: Response) => {
+  const handleBotStatus = async (req: Request, res: Response) => {
     try {
+      // Synchronize live account balance and positions directly from Binance USD-M
+      await tradingEngine.syncBinanceLiveState();
+
       res.status(200).json({
         status: tradingEngine.getStatus(),
         settings: tradingEngine.getSettings(),
         activePositions: tradingEngine.getPositions().filter((p) => p.status === 'OPEN'),
         closedPositions: tradingEngine.getPositions().filter((p) => p.status !== 'OPEN'),
         signals: tradingEngine.getSignals().slice(0, 30),
+        ineligibleSignals: tradingEngine.getIneligibleSignals().slice(0, 40),
         logs: tradingEngine.getLogs().slice(0, 40),
       });
     } catch (err: any) {
@@ -152,6 +157,29 @@ async function createServer(customPort?: number) {
 
   app.get('/api/bot/status', handleBotStatus);
   app.post('/api/bot/status', handleBotStatus);
+
+  app.get('/api/signals/ineligible', (req: Request, res: Response) => {
+    res.status(200).json({ success: true, ineligibleSignals: tradingEngine.getIneligibleSignals() });
+  });
+
+  // Direct Live Binance USD-M Endpoints
+  app.get('/api/binance/account', async (req: Request, res: Response) => {
+    try {
+      const account = await binanceCcxt.fetchLiveFuturesAccountV2();
+      res.status(200).json({ success: true, ...account });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get('/api/binance/positions', async (req: Request, res: Response) => {
+    try {
+      const posRisk = await binanceCcxt.fetchLivePositionsRiskV2();
+      res.status(200).json({ success: true, ...posRisk });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
 
   const handleBotToggle = (req: Request, res: Response) => {
     try {
@@ -175,23 +203,105 @@ async function createServer(customPort?: number) {
     res.status(200).json(tradingEngine.getSettings());
   });
 
-  app.post('/api/bot/settings', (req: Request, res: Response) => {
+  app.post('/api/bot/settings', async (req: Request, res: Response) => {
     try {
-      tradingEngine.updateSettings(req.body);
-      res.status(200).json({ success: true, settings: tradingEngine.getSettings() });
+      if (req.body?.geminiApiKey) {
+        setCustomGeminiApiKey(String(req.body.geminiApiKey).trim());
+      }
+      await tradingEngine.updateSettings(req.body);
+      res.status(200).json({
+        success: true,
+        settings: tradingEngine.getSettings(),
+        status: tradingEngine.getStatus(),
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
   // -------------------------------------------------------------
+  // Binance Connection Test Endpoint (/api/test-binance)
+  // Verifies provided credentials directly against Binance Futures /fapi/v2/account
+  // -------------------------------------------------------------
+  app.post('/api/test-binance', async (req: Request, res: Response) => {
+    try {
+      const apiKey = (req.body?.apiKey || '').trim();
+      const secretKey = (req.body?.secretKey || '').trim();
+      const testnet = Boolean(req.body?.testnet);
+
+      if (!apiKey || !secretKey) {
+        return res.status(200).json({
+          success: false,
+          error: 'Please enter both Binance API Key and Secret Key to test connection.',
+        });
+      }
+
+      // Initialize CCXT client with candidate credentials
+      const testClient = new ccxt.binanceusdm({
+        apiKey,
+        secret: secretKey,
+        enableRateLimit: true,
+        options: {
+          defaultType: 'future',
+          adjustForTimeDifference: true,
+        },
+      });
+
+      if (testnet) {
+        testClient.setSandboxMode(true);
+      }
+
+      // Execute signed query to Binance USD-M /fapi/v2/account
+      const acc = await testClient.fapiPrivateV2GetAccount();
+      const totalWalletBalance = parseFloat(acc?.totalWalletBalance || '0');
+      const availableBalance = parseFloat(acc?.availableBalance || '0');
+      const canTrade = Boolean(acc?.canTrade);
+
+      console.log(`[TEST BINANCE] Connection verified successfully. Wallet: $${totalWalletBalance}, Available: $${availableBalance}, canTrade: ${canTrade}`);
+
+      return res.status(200).json({
+        success: true,
+        message: `Connected successfully to Binance Futures! Total Wallet Balance: $${totalWalletBalance.toFixed(2)} USDT (Available: $${availableBalance.toFixed(2)} USDT). Trading Enabled: ${canTrade ? 'Yes' : 'No'}.`,
+        totalWalletBalance,
+        availableBalance,
+        canTrade,
+      });
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      console.warn('[TEST BINANCE] Verification notice:', errMsg);
+      let friendlyError = errMsg;
+
+      if (errMsg.includes('-2015') || errMsg.includes('Invalid API-key, IP, or permissions')) {
+        friendlyError = 'Binance Error (-2015): Invalid API-key, IP restriction, or missing permissions. Please ensure "Enable Futures" is checked on Binance, and add IP 34.34.226.197 to your IP whitelist (or select Unrestricted).';
+      } else if (errMsg.includes('-2014') || errMsg.includes('API-key format invalid')) {
+        friendlyError = 'Binance Error (-2014): API Key format is invalid. Please double check for trailing spaces or special characters.';
+      } else if (errMsg.includes('-1022') || errMsg.includes('Signature for this request is not valid')) {
+        friendlyError = 'Binance Error (-1022): Secret Key or signature is invalid. Please re-copy the Secret Key from Binance.';
+      } else if (errMsg.includes('-1021') || errMsg.includes('Timestamp')) {
+        friendlyError = 'Binance Error (-1021): Request timestamp issue. Adjusting server time...';
+      }
+
+      return res.status(200).json({
+        success: false,
+        error: friendlyError,
+        rawError: errMsg,
+      });
+    }
+  });
+
+  // -------------------------------------------------------------
   // Position Management APIs
   // -------------------------------------------------------------
-  const handleGetPositions = (req: Request, res: Response) => {
-    res.status(200).json({
-      open: tradingEngine.getPositions().filter((p) => p.status === 'OPEN'),
-      history: tradingEngine.getPositions().filter((p) => p.status !== 'OPEN'),
-    });
+  const handleGetPositions = async (req: Request, res: Response) => {
+    try {
+      await tradingEngine.syncBinanceLiveState();
+      res.status(200).json({
+        open: tradingEngine.getPositions().filter((p) => p.status === 'OPEN'),
+        history: tradingEngine.getPositions().filter((p) => p.status !== 'OPEN'),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to fetch positions' });
+    }
   };
 
   app.get('/api/positions', handleGetPositions);

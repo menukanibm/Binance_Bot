@@ -10,10 +10,12 @@ import { SettingsModal } from './components/SettingsModal';
 import { RequirementsAudit } from './components/RequirementsAudit';
 import { CleanupModal, CleanupMode } from './components/CleanupModal';
 import { LoginScreen } from './components/LoginScreen';
+import { IneligibleSignalsList } from './components/IneligibleSignalsList';
 import {
   Candle,
   SMCAnalysisResult,
   TradeSignal,
+  IneligibleSignal,
   Position,
   BotStatus,
   BotSettings,
@@ -37,6 +39,7 @@ import {
   Database,
   ShieldCheck,
   Trash2,
+  ShieldAlert,
 } from 'lucide-react';
 
 export default function App() {
@@ -45,11 +48,11 @@ export default function App() {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [analysis, setAnalysis] = useState<SMCAnalysisResult | null>(null);
   const [pairs, setPairs] = useState<CcxtPairInfo[]>([]);
-  const [activeTab, setActiveTab] = useState<'TERMINAL' | 'SIGNALS' | 'POSITIONS' | 'SCANNER' | 'WEBHOOK' | 'LOGS' | 'AUDIT'>('TERMINAL');
+  const [activeTab, setActiveTab] = useState<'TERMINAL' | 'SIGNALS' | 'SKIPPED' | 'POSITIONS' | 'SCANNER' | 'WEBHOOK' | 'LOGS' | 'AUDIT'>('TERMINAL');
 
   const [status, setStatus] = useState<BotStatus>({
     isRunning: true,
-    currentAction: 'Bot Status: Scanning Binance Pairs...',
+    currentAction: 'Makka Smart Execution: Scanning Binance Pairs with SMC & Elliott Wave...',
     analyzingSymbol: null,
     upcomingSignal: null,
     lastScanTime: Date.now(),
@@ -66,11 +69,15 @@ export default function App() {
     freeUsdt: 0,
     totalActiveMarginUsdt: 0,
     totalActiveMarginPercent: 0,
-    maxTotalMarginPct: 10,
+    maxTotalMarginPct: 50,
     marginMode: 'ISOLATED',
     tradingMode: 'LIVE',
     geminiModel: 'gemini-3.8-flash',
     geminiThreshold: 80,
+    positionCapitalPercent: 10,
+    customCapitalUsdt: 1000,
+    isLiveWalletConnected: false,
+    ineligibleSignalsCount: 0,
   });
 
   const [settings, setSettings] = useState<BotSettings>({
@@ -78,19 +85,23 @@ export default function App() {
     scanIntervalMinutes: 2,
     leverage: 10,
     riskPercentage: 2,
+    positionCapitalPercent: 10,
+    customCapitalUsdt: 1000,
     geminiThreshold: 80,
     tradingMode: 'LIVE',
     defaultSlPercent: 1.0,
     defaultTpPercent: 2.0,
     binanceApiKey: '',
     binanceApiSecret: '',
-    maxTotalMarginPct: 10,
+    geminiApiKey: typeof window !== 'undefined' ? localStorage.getItem('menuka_gemini_api_key') || '' : '',
+    maxTotalMarginPct: 50,
     marginMode: 'ISOLATED',
   });
 
   const [openPositions, setOpenPositions] = useState<Position[]>([]);
   const [closedPositions, setClosedPositions] = useState<Position[]>([]);
   const [signals, setSignals] = useState<TradeSignal[]>([]);
+  const [ineligibleSignals, setIneligibleSignals] = useState<IneligibleSignal[]>([]);
   const [logs, setLogs] = useState<{ time: string; message: string; type: string }[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [isTogglingBot, setIsTogglingBot] = useState(false);
@@ -100,7 +111,6 @@ export default function App() {
   const [cleanupInitialMode, setCleanupInitialMode] = useState<CleanupMode>('UNEXECUTED_SIGNALS');
   const [cleanupToast, setCleanupToast] = useState<string | null>(null);
 
-  // Authentication State with Session Persistence
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem('menuka_trading_auth');
@@ -132,7 +142,7 @@ export default function App() {
     setIsCleanupModalOpen(true);
   };
 
-  // Fetch Bot Status and Positions (with Supabase fallback for Vercel/Static hosting)
+  // Fetch Bot Status, Positions, Signals and Ineligible Signals
   const fetchBotStatus = useCallback(async () => {
     let handled = false;
     try {
@@ -146,10 +156,11 @@ export default function App() {
           const data = await res.json();
           if (data.status) setStatus(data.status);
           if (data.settings) setSettings(data.settings);
-          if (data.activePositions) setOpenPositions(data.activePositions);
-          if (data.closedPositions) setClosedPositions(data.closedPositions);
-          if (data.signals) setSignals(data.signals);
-          if (data.logs) setLogs(data.logs);
+          if (Array.isArray(data.activePositions)) setOpenPositions(data.activePositions);
+          if (Array.isArray(data.closedPositions)) setClosedPositions(data.closedPositions);
+          if (Array.isArray(data.signals)) setSignals(data.signals);
+          if (Array.isArray(data.ineligibleSignals)) setIneligibleSignals(data.ineligibleSignals);
+          if (Array.isArray(data.logs)) setLogs(data.logs);
           handled = true;
         }
       }
@@ -157,7 +168,6 @@ export default function App() {
       console.warn('Bot status fetch poll note:', err);
     }
 
-    // Direct Supabase Fallback when running on Vercel or when local Express backend is not reached
     if (!handled) {
       try {
         const [tradesDb, signalsDb, logsDb] = await Promise.all([
@@ -166,8 +176,7 @@ export default function App() {
           fetchLogsFromSupabase(40),
         ]);
 
-        if (tradesDb.open.length > 0 || tradesDb.history.length > 0) {
-          setOpenPositions(tradesDb.open);
+        if (tradesDb.history.length > 0) {
           setClosedPositions(tradesDb.history);
           const totalWins = tradesDb.history.filter((p) => p.status === 'WIN').length;
           const totalLosses = tradesDb.history.filter((p) => p.status === 'LOSS').length;
@@ -177,8 +186,8 @@ export default function App() {
 
           setStatus((prev) => ({
             ...prev,
-            activePositionsCount: tradesDb.open.length,
-            totalTrades: tradesDb.open.length + tradesDb.history.length,
+            activePositionsCount: 0,
+            totalTrades: tradesDb.history.length,
             totalWins,
             totalLosses,
             winRate,
@@ -193,9 +202,7 @@ export default function App() {
     }
   }, []);
 
-  // Fetch Candles & SMC for Selected Symbol (with direct Binance USD-M public REST fallback for Vercel)
   const fetchKlines = useCallback(async (sym: string, tf: string) => {
-    // 1. Try local Express backend first
     try {
       const res = await fetch(`/api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(tf)}&limit=70`, {
         headers: { Accept: 'application/json' },
@@ -216,7 +223,6 @@ export default function App() {
       console.warn('Backend klines fetch note, trying direct Binance public API:', err);
     }
 
-    // 2. Direct Fallback to Binance USD-M Public REST API (Fixes Vercel static deployments!)
     try {
       const directRes = await fetch(
         `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(tf)}&limit=70`
@@ -242,9 +248,7 @@ export default function App() {
     }
   }, []);
 
-  // Fetch Binance USD-M Pairs (with direct Binance 24hr ticker fallback for Vercel)
   const fetchPairs = useCallback(async () => {
-    // 1. Try local Express backend first
     try {
       const res = await fetch('/api/binance/pairs', {
         headers: { Accept: 'application/json' },
@@ -264,7 +268,6 @@ export default function App() {
       console.warn('Backend pairs fetch note, trying direct Binance public API:', err);
     }
 
-    // 2. Direct Fallback to Binance USD-M 24hr Ticker API (Fixes Vercel static deployments!)
     try {
       const directRes = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr');
       if (directRes.ok) {
@@ -301,7 +304,21 @@ export default function App() {
     }
   }, []);
 
-  // Initial Load and Polling - Only active when authenticated
+  useEffect(() => {
+    try {
+      const storedGeminiKey = localStorage.getItem('menuka_gemini_api_key');
+      if (storedGeminiKey && storedGeminiKey.trim()) {
+        fetch('/api/bot/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ geminiApiKey: storedGeminiKey.trim() }),
+        }).catch(() => null);
+      }
+    } catch (e) {
+      console.warn('Gemini key persistence load error:', e);
+    }
+  }, []);
+
   useEffect(() => {
     if (!isAuthenticated) return;
 
@@ -309,7 +326,6 @@ export default function App() {
     fetchKlines(selectedSymbol, selectedInterval);
     fetchPairs();
 
-    // Regular Polling for real-time status and live PnL updates
     const statusInterval = setInterval(fetchBotStatus, 2500);
     const chartInterval = setInterval(() => {
       fetchKlines(selectedSymbol, selectedInterval);
@@ -321,7 +337,6 @@ export default function App() {
     };
   }, [isAuthenticated, fetchBotStatus, fetchKlines, fetchPairs, selectedSymbol, selectedInterval]);
 
-  // Countdown timer calculation - Only active when authenticated
   useEffect(() => {
     if (!isAuthenticated) return;
 
@@ -334,7 +349,6 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isAuthenticated, status.nextScanTime]);
 
-  // Toggle Bot Auto-Trading with optimistic UI updates and resilient fallback
   const handleToggleBot = async () => {
     if (isTogglingBot) return;
     setIsTogglingBot(true);
@@ -342,17 +356,15 @@ export default function App() {
     const prevRunning = status.isRunning;
     const nextRunning = !prevRunning;
 
-    // 1. Optimistic UI update so button provides immediate feedback
     setStatus((prev) => ({
       ...prev,
       isRunning: nextRunning,
       currentAction: nextRunning
-        ? 'Bot Status: Resuming Auto-Trading...'
-        : 'Bot Status: Idle (Auto-Trading Paused)',
+        ? 'Makka Smart Execution: Resuming Auto-Trading...'
+        : 'Makka Smart Execution: Idle (Auto-Trading Paused)',
     }));
 
     try {
-      // Primary POST toggle request
       let res = await fetch('/api/bot/toggle', {
         method: 'POST',
         headers: {
@@ -361,7 +373,6 @@ export default function App() {
         },
       }).catch(() => null);
 
-      // Graceful fallback to GET in case of proxy issues
       if (!res || !res.ok) {
         res = await fetch('/api/bot/toggle', {
           method: 'GET',
@@ -392,7 +403,6 @@ export default function App() {
     }
   };
 
-  // Trigger Immediate 2-Minute Scan
   const handleTriggerScan = async () => {
     if (isScanning) return;
     setIsScanning(true);
@@ -414,7 +424,6 @@ export default function App() {
     }
   };
 
-  // Close Position
   const handleClosePosition = async (positionId: string) => {
     try {
       await fetch('/api/positions/close', {
@@ -433,9 +442,16 @@ export default function App() {
     }
   };
 
-  // Save Settings
   const handleSaveSettings = async (newSettings: Partial<BotSettings>) => {
     try {
+      if (newSettings.geminiApiKey !== undefined) {
+        try {
+          localStorage.setItem('menuka_gemini_api_key', newSettings.geminiApiKey.trim());
+        } catch (e) {
+          console.warn('Could not save geminiApiKey to localStorage:', e);
+        }
+      }
+
       const res = await fetch('/api/bot/settings', {
         method: 'POST',
         headers: {
@@ -450,9 +466,10 @@ export default function App() {
         if (ct.includes('application/json')) {
           const data = await res.json();
           if (data.settings) setSettings(data.settings);
+          if (data.status) setStatus(data.status);
         }
       }
-      fetchBotStatus();
+      await fetchBotStatus();
     } catch (err) {
       console.warn('Save settings note:', err);
     }
@@ -499,7 +516,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setCleanupToast(null)}
-              className="text-emerald-400 hover:text-white text-xs px-2 py-0.5 rounded hover:bg-emerald-900/40 transition"
+              className="text-emerald-400 hover:text-white text-xs px-2 py-0.5 rounded hover:bg-emerald-900/40 transition cursor-pointer"
             >
               Dismiss
             </button>
@@ -508,10 +525,10 @@ export default function App() {
 
         {/* Tab Switcher Navigation */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
-          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
+          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1 flex-wrap">
             <button
               onClick={() => setActiveTab('TERMINAL')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'TERMINAL'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'text-slate-400 hover:text-white'
@@ -523,7 +540,7 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('SIGNALS')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'SIGNALS'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'text-slate-400 hover:text-white'
@@ -534,8 +551,20 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => setActiveTab('SKIPPED')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeTab === 'SKIPPED'
+                  ? 'bg-amber-500 text-slate-950 shadow'
+                  : 'text-amber-400 hover:text-amber-300 bg-amber-500/10'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Ineligible / Skipped ({ineligibleSignals.length})</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('POSITIONS')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'POSITIONS'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'text-slate-400 hover:text-white'
@@ -547,7 +576,7 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('SCANNER')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'SCANNER'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'text-slate-400 hover:text-white'
@@ -559,7 +588,7 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('WEBHOOK')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'WEBHOOK'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'text-slate-400 hover:text-white'
@@ -571,7 +600,7 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('LOGS')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'LOGS'
                   ? 'bg-amber-500 text-slate-950 shadow'
                   : 'text-slate-400 hover:text-white'
@@ -583,7 +612,7 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('AUDIT')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 activeTab === 'AUDIT'
                   ? 'bg-emerald-500 text-slate-950 shadow'
                   : 'text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
@@ -597,7 +626,7 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => openCleanupModal('UNEXECUTED_SIGNALS')}
-              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 flex items-center gap-1.5 transition shadow-sm"
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 flex items-center gap-1.5 transition shadow-sm cursor-pointer"
               title="Safe Mode: Delete unexecuted signals & logs. All active open positions are strictly preserved."
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -609,7 +638,7 @@ export default function App() {
 
             <button
               onClick={() => openCleanupModal('ALL_HISTORY')}
-              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-rose-300 hover:text-white bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 flex items-center gap-1.5 transition shadow-sm"
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold text-rose-300 hover:text-white bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 flex items-center gap-1.5 transition shadow-sm cursor-pointer"
               title="Clear all closed trade history, past signals & logs. Active open positions are strictly preserved."
             >
               <Trash2 className="w-3.5 h-3.5 text-rose-400" />
@@ -674,7 +703,15 @@ export default function App() {
           />
         )}
 
-        {/* Tab 3: Positions & Trade History */}
+        {/* Tab 3: Dedicated Ineligible & Skipped Signals */}
+        {activeTab === 'SKIPPED' && (
+          <IneligibleSignalsList
+            ineligibleSignals={ineligibleSignals}
+            onSelectSymbol={handleSelectSymbol}
+          />
+        )}
+
+        {/* Tab 4: Positions & Trade History */}
         {activeTab === 'POSITIONS' && (
           <PositionsTable
             openPositions={openPositions}
@@ -685,7 +722,7 @@ export default function App() {
           />
         )}
 
-        {/* Tab 4: Binance USD-M Pair Heatmap & Scanner */}
+        {/* Tab 5: Binance USD-M Pair Heatmap & Scanner */}
         {activeTab === 'SCANNER' && (
           <MarketScannerList
             pairs={pairs}
@@ -695,10 +732,10 @@ export default function App() {
           />
         )}
 
-        {/* Tab 5: Webhook & TradingView Integration */}
+        {/* Tab 6: Webhook & TradingView Integration */}
         {activeTab === 'WEBHOOK' && <WebhookIntegration />}
 
-        {/* Tab 6: Engine Activity Logs Console */}
+        {/* Tab 7: Engine Activity Logs Console */}
         {activeTab === 'LOGS' && (
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
             <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
@@ -739,13 +776,13 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 7: Requirements & Database Audit */}
+        {/* Tab 8: Requirements & Database Audit */}
         {activeTab === 'AUDIT' && <RequirementsAudit />}
       </main>
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-3 px-4 text-center text-xs text-slate-500 font-mono bg-slate-950">
-        Binance Futures USD-M Automated Engine • SMC Order Blocks & Divergence • Gemini AI &gt;80% Confidence
+        Makka Smart Execution • Binance Futures USD-M Engine • SMC &amp; Elliott Wave Theory • Gemini AI &gt;80% Confidence
       </footer>
 
       {/* Settings Modal */}

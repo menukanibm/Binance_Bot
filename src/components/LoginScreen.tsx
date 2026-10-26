@@ -72,14 +72,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               </div>
             </div>
             <h1 className="text-2xl font-extrabold tracking-tight text-white flex items-center justify-center gap-2">
-              Menuka <span className="text-amber-400">Terminal</span>
+              Makka <span className="text-amber-400">Smart Execution</span>
             </h1>
             <p className="text-xs text-slate-400">
-              Binance USD-M Futures • SMC Order Blocks & Gemini AI
+              Binance USD-M Futures • SMC Order Blocks, Elliott Waves & Gemini AI
             </p>
             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800/80 border border-slate-700/60 text-[11px] text-slate-300 font-mono">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Protected Access Gate</span>
+              <span>Protected Trading Terminal</span>
             </div>
           </div>
 

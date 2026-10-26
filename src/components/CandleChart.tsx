@@ -7,11 +7,12 @@ import {
   Crosshair,
   Maximize2,
   Sparkles,
+  Activity,
 } from 'lucide-react';
 
 interface CandleChartProps {
-  candles: Candle[];
-  analysis: SMCAnalysisResult | null;
+  candles?: Candle[];
+  analysis?: SMCAnalysisResult | null;
   symbol: string;
   interval: string;
   onSymbolChange: (sym: string) => void;
@@ -19,7 +20,7 @@ interface CandleChartProps {
 }
 
 export const CandleChart: React.FC<CandleChartProps> = ({
-  candles,
+  candles = [],
   analysis,
   symbol,
   interval,
@@ -36,7 +37,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
     const updateSize = () => {
       if (containerRef.current) {
         setDimensions({
-          width: containerRef.current.clientWidth,
+          width: containerRef.current.clientWidth || 800,
           height: 420,
         });
       }
@@ -46,33 +47,38 @@ export const CandleChart: React.FC<CandleChartProps> = ({
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  if (!candles || candles.length === 0) {
+  const safeCandles = Array.isArray(candles) ? candles : [];
+
+  if (safeCandles.length === 0) {
     return (
-      <div className="w-full h-[420px] bg-slate-900/60 border border-slate-800 rounded-xl flex items-center justify-center text-slate-500">
+      <div className="w-full h-[420px] bg-slate-900/60 border border-slate-800 rounded-xl flex items-center justify-center text-slate-500 font-mono text-xs">
         Loading Binance USD-M OHLCV Candles...
       </div>
     );
   }
 
-  // Display only the last 50-60 candles for clarity
-  const displayCandles = candles.slice(-55);
+  const displayCandles = safeCandles.slice(-55);
   const paddingRight = 65;
   const paddingBottom = 30;
   const paddingTop = 20;
   const paddingLeft = 10;
 
-  const chartWidth = dimensions.width - paddingRight - paddingLeft;
-  const chartHeight = dimensions.height - paddingTop - paddingBottom;
+  const chartWidth = Math.max(100, dimensions.width - paddingRight - paddingLeft);
+  const chartHeight = Math.max(100, dimensions.height - paddingTop - paddingBottom);
 
-  const minPrice = Math.min(...displayCandles.map((c) => c.low)) * 0.998;
-  const maxPrice = Math.max(...displayCandles.map((c) => c.high)) * 1.002;
+  const lows = displayCandles.map((c) => c?.low ?? 0).filter((v) => v > 0);
+  const highs = displayCandles.map((c) => c?.high ?? 0).filter((v) => v > 0);
+
+  const minPrice = (lows.length > 0 ? Math.min(...lows) : 1) * 0.998;
+  const maxPrice = (highs.length > 0 ? Math.max(...highs) : 2) * 1.002;
   const priceRange = maxPrice - minPrice || 1;
 
-  const candleSpacing = chartWidth / displayCandles.length;
+  const candleSpacing = chartWidth / (displayCandles.length || 1);
   const candleBodyWidth = Math.max(2, candleSpacing * 0.7);
 
   const getY = (price: number) => {
-    return paddingTop + chartHeight - ((price - minPrice) / priceRange) * chartHeight;
+    const safeP = isNaN(price) ? minPrice : price;
+    return paddingTop + chartHeight - ((safeP - minPrice) / priceRange) * chartHeight;
   };
 
   const getPriceAtY = (y: number) => {
@@ -83,15 +89,14 @@ export const CandleChart: React.FC<CandleChartProps> = ({
   const currentPrice = displayCandles[displayCandles.length - 1]?.close || 0;
   const firstPrice = displayCandles[0]?.open || currentPrice;
   const priceDiff = currentPrice - firstPrice;
-  const priceDiffPercent = ((priceDiff / firstPrice) * 100).toFixed(2);
+  const priceDiffPercent = firstPrice > 0 ? ((priceDiff / firstPrice) * 100).toFixed(2) : '0.00';
   const isUp = priceDiff >= 0;
 
-  // Active Order Blocks in view
   const activeOBs = analysis?.orderBlocks || [];
   const activeFVGs = analysis?.fvgZones || [];
   const sweeps = analysis?.liquiditySweeps || [];
+  const ew = analysis?.elliottWave;
 
-  // Mouse hover handler
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
@@ -113,7 +118,6 @@ export const CandleChart: React.FC<CandleChartProps> = ({
     setHoverY(null);
   };
 
-  // Common quick symbols
   const topSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'SUIUSDT'];
   const timeframes = ['1m', '5m', '15m', '1h'];
 
@@ -128,7 +132,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
               <button
                 key={s}
                 onClick={() => onSymbolChange(s)}
-                className={`px-2.5 py-1 text-xs font-semibold rounded transition ${
+                className={`px-2.5 py-1 text-xs font-semibold rounded transition cursor-pointer ${
                   symbol === s
                     ? 'bg-amber-500 text-slate-950 shadow'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800'
@@ -156,7 +160,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
               <button
                 key={tf}
                 onClick={() => onIntervalChange(tf)}
-                className={`px-2 py-0.5 text-xs font-medium rounded transition ${
+                className={`px-2 py-0.5 text-xs font-medium rounded transition cursor-pointer ${
                   interval === tf
                     ? 'bg-slate-700 text-amber-400 font-bold'
                     : 'text-slate-400 hover:text-white'
@@ -168,11 +172,11 @@ export const CandleChart: React.FC<CandleChartProps> = ({
           </div>
         </div>
 
-        {/* Live Price & SMC Confluence Info */}
-        <div className="flex items-center gap-4">
+        {/* Live Price & SMC / Elliott Wave Confluence Info */}
+        <div className="flex items-center gap-3">
           <div className="text-right">
             <div className="text-sm font-bold font-mono text-white">
-              ${currentPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+              ${(currentPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
             </div>
             <div
               className={`text-xs font-mono flex items-center justify-end gap-1 ${
@@ -187,21 +191,32 @@ export const CandleChart: React.FC<CandleChartProps> = ({
             </div>
           </div>
 
-          {/* SMC Badge */}
+          {/* SMC & Elliott Wave Badges */}
           {analysis && (
-            <div
-              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border flex items-center gap-1.5 ${
-                analysis.bias === 'LONG'
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                  : analysis.bias === 'SHORT'
-                  ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                  : 'bg-slate-800 border-slate-700 text-slate-300'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>
-                SMC: {analysis.bias} ({analysis.confluenceScore}%)
-              </span>
+            <div className="flex items-center gap-2">
+              <div
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold border flex items-center gap-1.5 ${
+                  analysis.bias === 'LONG'
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                    : analysis.bias === 'SHORT'
+                    ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                    : 'bg-slate-800 border-slate-700 text-slate-300'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>
+                  SMC: {analysis.bias} ({analysis.confluenceScore}%)
+                </span>
+              </div>
+
+              {ew && (
+                <div className="px-2.5 py-1 rounded-lg text-xs font-semibold border bg-cyan-950/40 border-cyan-500/30 text-cyan-300 flex items-center gap-1.5 hidden sm:flex">
+                  <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>
+                    Elliott: {ew.currentWave} ({(ew.fibRetracement * 100).toFixed(0)}% Fib)
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -238,7 +253,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
                   fontSize="10"
                   fontFamily="monospace"
                 >
-                  {price.toFixed(symbol.includes('BTC') ? 1 : 2)}
+                  {(price || 0).toFixed(symbol.includes('BTC') ? 1 : 2)}
                 </text>
               </g>
             );
@@ -246,8 +261,9 @@ export const CandleChart: React.FC<CandleChartProps> = ({
 
           {/* 1. Fair Value Gaps (FVG) Shaded Zones */}
           {activeFVGs.map((fvg, i) => {
-            const topY = getY(fvg.top);
-            const bottomY = getY(fvg.bottom);
+            if (!fvg) return null;
+            const topY = getY(fvg.top || currentPrice);
+            const bottomY = getY(fvg.bottom || currentPrice);
             const boxY = Math.min(topY, bottomY);
             const boxHeight = Math.max(3, Math.abs(bottomY - topY));
             const isBullish = fvg.type === 'BULLISH';
@@ -272,7 +288,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
                   fontFamily="monospace"
                   opacity="0.85"
                 >
-                  FVG {fvg.type} [{fvg.bottom.toFixed(2)} - {fvg.top.toFixed(2)}]
+                  FVG {fvg.type} [{(fvg.bottom || 0).toFixed(2)} - {(fvg.top || 0).toFixed(2)}]
                 </text>
               </g>
             );
@@ -280,8 +296,9 @@ export const CandleChart: React.FC<CandleChartProps> = ({
 
           {/* 2. Order Blocks (OB) Shaded Zones */}
           {activeOBs.map((ob, i) => {
-            const topY = getY(ob.high);
-            const bottomY = getY(ob.low);
+            if (!ob) return null;
+            const topY = getY(ob.high || currentPrice);
+            const bottomY = getY(ob.low || currentPrice);
             const boxY = Math.min(topY, bottomY);
             const boxHeight = Math.max(4, Math.abs(bottomY - topY));
             const isBullish = ob.type === 'BULLISH';
@@ -305,7 +322,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
                   fontWeight="bold"
                   fontFamily="monospace"
                 >
-                  {isBullish ? '🟩 Bullish Order Block' : '🟥 Bearish Order Block'} ({ob.low.toFixed(2)} - {ob.high.toFixed(2)})
+                  {isBullish ? '🟩 Bullish Order Block' : '🟥 Bearish Order Block'} ({(ob.low || 0).toFixed(2)} - {(ob.high || 0).toFixed(2)})
                 </text>
               </g>
             );
@@ -313,20 +330,20 @@ export const CandleChart: React.FC<CandleChartProps> = ({
 
           {/* 3. Candlesticks */}
           {displayCandles.map((c, i) => {
+            if (!c) return null;
             const x = paddingLeft + i * candleSpacing + candleSpacing / 2;
-            const openY = getY(c.open);
-            const closeY = getY(c.close);
-            const highY = getY(c.high);
-            const lowY = getY(c.low);
+            const openY = getY(c.open || 0);
+            const closeY = getY(c.close || 0);
+            const highY = getY(c.high || 0);
+            const lowY = getY(c.low || 0);
 
-            const isGreen = c.close >= c.open;
+            const isGreen = (c.close || 0) >= (c.open || 0);
             const candleColor = isGreen ? '#10b981' : '#ef4444';
             const bodyY = Math.min(openY, closeY);
             const bodyHeight = Math.max(2, Math.abs(closeY - openY));
 
             return (
               <g key={`candle_${i}`}>
-                {/* Wick */}
                 <line
                   x1={x}
                   y1={highY}
@@ -335,7 +352,6 @@ export const CandleChart: React.FC<CandleChartProps> = ({
                   stroke={candleColor}
                   strokeWidth="1.2"
                 />
-                {/* Body */}
                 <rect
                   x={x - candleBodyWidth / 2}
                   y={bodyY}
@@ -350,7 +366,8 @@ export const CandleChart: React.FC<CandleChartProps> = ({
 
           {/* 4. Liquidity Sweeps Markers */}
           {sweeps.map((sweep, i) => {
-            const y = getY(sweep.level);
+            if (!sweep) return null;
+            const y = getY(sweep.level || currentPrice);
             const isHighSweep = sweep.type === 'HIGH_SWEEP';
             return (
               <g key={`swp_${i}`}>
@@ -371,7 +388,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
                   fontWeight="bold"
                   fontFamily="monospace"
                 >
-                  ⚡ {isHighSweep ? 'BUY-SIDE SWEEP' : 'SELL-SIDE SWEEP'} ({sweep.level.toFixed(2)})
+                  ⚡ {isHighSweep ? 'BUY-SIDE SWEEP' : 'SELL-SIDE SWEEP'} ({(sweep.level || 0).toFixed(2)})
                 </text>
               </g>
             );
@@ -471,7 +488,7 @@ export const CandleChart: React.FC<CandleChartProps> = ({
             fontWeight="bold"
             fontFamily="monospace"
           >
-            {currentPrice.toFixed(symbol.includes('BTC') ? 1 : 2)}
+            {(currentPrice || 0).toFixed(symbol.includes('BTC') ? 1 : 2)}
           </text>
 
           {/* Crosshair Cursor & Hover Information */}
@@ -503,57 +520,53 @@ export const CandleChart: React.FC<CandleChartProps> = ({
         {hoveredCandle && (
           <div className="absolute top-2 left-3 bg-slate-900/90 border border-slate-700/80 rounded px-2.5 py-1 text-[11px] font-mono text-slate-300 flex items-center gap-3 backdrop-blur pointer-events-none shadow-lg">
             <span>
-              O: <strong className="text-white">{hoveredCandle.open}</strong>
+              O: <strong className="text-white">{hoveredCandle.open ?? 0}</strong>
             </span>
             <span>
-              H: <strong className="text-emerald-400">{hoveredCandle.high}</strong>
+              H: <strong className="text-emerald-400">{hoveredCandle.high ?? 0}</strong>
             </span>
             <span>
-              L: <strong className="text-rose-400">{hoveredCandle.low}</strong>
+              L: <strong className="text-rose-400">{hoveredCandle.low ?? 0}</strong>
             </span>
             <span>
-              C: <strong className="text-white">{hoveredCandle.close}</strong>
+              C: <strong className="text-white">{hoveredCandle.close ?? 0}</strong>
             </span>
             <span>
-              Vol: <strong className="text-amber-400">{Math.round(hoveredCandle.volume)}</strong>
+              Vol: <strong className="text-amber-400">{Math.round(hoveredCandle.volume ?? 0)}</strong>
             </span>
           </div>
         )}
       </div>
 
-      {/* SMC Key Indicators Breakdown Footer */}
+      {/* SMC & Elliott Wave Breakdown Footer */}
       {analysis && (
         <div className="px-4 py-2.5 bg-slate-950 border-t border-slate-800/80 flex flex-wrap items-center justify-between text-xs gap-3">
           <div className="flex flex-wrap items-center gap-3 font-mono text-slate-300">
-            <span className="text-slate-400">SMC Setup:</span>
+            <span className="text-slate-400">SMC:</span>
             <span className="text-white font-semibold">
               {analysis.bias === 'LONG' ? 'Bullish' : analysis.bias === 'SHORT' ? 'Bearish' : 'Neutral'} Structure
             </span>
             <span className="text-slate-600">|</span>
-            <span className="text-slate-400">Divergence:</span>
-            <span
-              className={
-                analysis.divergence.type.includes('BULLISH')
-                  ? 'text-emerald-400'
-                  : analysis.divergence.type.includes('BEARISH')
-                  ? 'text-rose-400'
-                  : 'text-slate-400'
-              }
-            >
-              {analysis.divergence.type.replace('_', ' ')} (RSI {analysis.divergence.rsiValue})
-            </span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">Entry Zone:</span>
+            {ew && (
+              <>
+                <span className="text-slate-400">Elliott:</span>
+                <span className="text-cyan-400 font-semibold">
+                  {ew.description}
+                </span>
+                <span className="text-slate-600">|</span>
+              </>
+            )}
+            <span className="text-slate-400">Entry:</span>
             <span className="text-amber-400">
-              [${analysis.entryZone.min.toFixed(2)} - ${analysis.entryZone.max.toFixed(2)}]
+              [${(analysis.entryZone?.min || currentPrice * 0.995).toFixed(2)} - ${(analysis.entryZone?.max || currentPrice * 1.005).toFixed(2)}]
             </span>
           </div>
 
           <div className="flex items-center gap-2 text-xs font-mono">
             <span className="text-emerald-400">● Bullish OB</span>
             <span className="text-rose-400">● Bearish OB</span>
-            <span className="text-cyan-400">● Liquidity Sweeps</span>
-            <span className="text-amber-400">● FVG Zones</span>
+            <span className="text-cyan-400">● Elliott Wave</span>
+            <span className="text-amber-400">● FVG Imbalance</span>
           </div>
         </div>
       )}

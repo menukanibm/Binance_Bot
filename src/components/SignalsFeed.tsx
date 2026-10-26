@@ -11,25 +11,29 @@ import {
   Layers,
   Zap,
   Trash2,
+  AlertCircle,
+  Activity,
 } from 'lucide-react';
 
 interface SignalsFeedProps {
-  signals: TradeSignal[];
-  status: BotStatus;
+  signals?: TradeSignal[];
+  status?: BotStatus;
   onSelectSymbol: (symbol: string) => void;
   onOpenCleanupSignals?: () => void;
 }
 
 export const SignalsFeed: React.FC<SignalsFeedProps> = ({
-  signals,
+  signals = [],
   status,
   onSelectSymbol,
   onOpenCleanupSignals,
 }) => {
+  const safeSignals = Array.isArray(signals) ? signals : [];
+
   return (
     <div className="space-y-4">
       {/* Upcoming Signal Live Announcement Card */}
-      {status.upcomingSignal ? (
+      {status?.upcomingSignal ? (
         <div className="bg-gradient-to-r from-emerald-950/60 via-slate-900 to-amber-950/40 border border-emerald-500/40 rounded-xl p-4 shadow-xl shadow-emerald-500/5 relative overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -42,7 +46,7 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
                     Upcoming High-Confluence Signal
                   </span>
                   <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">
-                    {status.upcomingSignal.confidence}% Confluence
+                    {status.upcomingSignal.confidence ?? 0}% Confluence
                   </span>
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
@@ -59,7 +63,7 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
                     {status.upcomingSignal.bias}
                   </span>
                   <span className="text-xs text-slate-400">
-                    Est. Entry: ${status.upcomingSignal.entryEst.toFixed(2)}
+                    Est. Entry: ${(status.upcomingSignal.entryEst ?? 0).toFixed(2)}
                   </span>
                 </div>
               </div>
@@ -72,7 +76,7 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
               </div>
               <button
                 onClick={() => onSelectSymbol(status.upcomingSignal!.symbol)}
-                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition"
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition cursor-pointer"
               >
                 View Chart
               </button>
@@ -87,7 +91,7 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
           <div className="flex items-center gap-2.5">
             <Radio className="w-4 h-4 text-amber-400 animate-pulse" />
             <span>
-              2-Minute Scanner is actively monitoring all USD-M pairs for fresh SMC Order Blocks & RSI Divergences...
+              2-Minute Scanner is actively monitoring all USD-M pairs for fresh SMC Order Blocks, Elliott Waves & RSI Divergences...
             </span>
           </div>
           <span className="font-mono text-slate-500">Auto-Trading Active</span>
@@ -102,14 +106,14 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
             Live Signal & Execution Feed
           </h3>
           <span className="text-xs text-slate-400 font-mono">
-            Auto-Trading on Binance Futures (&gt;80% Gemini Validation)
+            Makka Smart Execution on Binance Futures (&gt;80% Gemini Validation)
           </span>
         </div>
 
         {onOpenCleanupSignals && (
           <button
             onClick={onOpenCleanupSignals}
-            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 hover:text-amber-300 border border-slate-700 hover:border-amber-500/40 text-xs font-semibold flex items-center gap-1.5 transition self-start sm:self-auto shadow-sm"
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 hover:text-amber-300 border border-slate-700 hover:border-amber-500/40 text-xs font-semibold flex items-center gap-1.5 transition self-start sm:self-auto shadow-sm cursor-pointer"
             title="Safe Mode: Clear past unexecuted signals and logs. All active open positions are strictly preserved."
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -122,16 +126,21 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
       </div>
 
       {/* Signal Cards List */}
-      {signals.length === 0 ? (
+      {safeSignals.length === 0 ? (
         <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-8 text-center text-slate-500 text-xs">
-          Scanning pairs... Signals will automatically appear here once high-confluence SMC entry zones are confirmed.
+          Scanning pairs... Signals will automatically appear here once high-confluence SMC & Elliott Wave entry zones are confirmed.
         </div>
       ) : (
         <div className="space-y-3">
-          {signals.map((sig) => {
+          {safeSignals.map((sig) => {
+            if (!sig) return null;
             const isBuy = sig.side === 'BUY';
             const isExecuted = sig.status === 'EXECUTED';
             const isApproved = sig.status === 'APPROVED' || sig.status === 'EXECUTED';
+            const isSkipped = sig.status.startsWith('SKIPPED_');
+            const price = sig.price ?? 0;
+            const takeProfit = sig.takeProfit ?? 0;
+            const stopLoss = sig.stopLoss ?? 0;
 
             return (
               <div
@@ -181,11 +190,11 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
                       </div>
 
                       <div className="flex items-center gap-3 text-xs font-mono text-slate-400 mt-1">
-                        <span>Price: ${sig.price.toFixed(sig.price > 10 ? 2 : 4)}</span>
+                        <span>Price: ${price.toFixed(price > 10 ? 2 : 4)}</span>
                         <span>•</span>
-                        <span className="text-emerald-400">TP: ${sig.takeProfit.toFixed(sig.price > 10 ? 2 : 4)} (+2%)</span>
+                        <span className="text-emerald-400">TP: ${takeProfit.toFixed(price > 10 ? 2 : 4)} (+2%)</span>
                         <span>•</span>
-                        <span className="text-rose-400">SL: ${sig.stopLoss.toFixed(sig.price > 10 ? 2 : 4)} (-1%)</span>
+                        <span className="text-rose-400">SL: ${stopLoss.toFixed(price > 10 ? 2 : 4)} (-1%)</span>
                       </div>
                     </div>
                   </div>
@@ -196,11 +205,13 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono font-semibold ${
                         isApproved
                           ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                          : isSkipped
+                          ? 'bg-amber-950/40 border-amber-500/40 text-amber-300'
                           : 'bg-rose-950/40 border-rose-500/40 text-rose-300'
                       }`}
                     >
                       <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Gemini AI: {sig.geminiConfidence}%</span>
+                      <span>Gemini AI: {sig.geminiConfidence ?? 0}%</span>
                       {isApproved ? (
                         <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
                       ) : (
@@ -214,6 +225,8 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
                           ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/20'
                           : isApproved
                           ? 'bg-amber-500 text-slate-950'
+                          : isSkipped
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                           : 'bg-slate-800 text-slate-400'
                       }`}
                     >
@@ -222,18 +235,23 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
 
                     <button
                       onClick={() => onSelectSymbol(sig.symbol)}
-                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition"
+                      className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-lg transition cursor-pointer"
                     >
                       View Chart
                     </button>
                   </div>
                 </div>
 
-                {/* SMC & Divergence Confluence Badges */}
+                {/* SMC & Elliott Wave Confluence Badges */}
                 <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-2">
                   <span className="text-[10px] uppercase font-bold text-slate-500 font-mono">
                     Confluence:
                   </span>
+                  {sig.elliottWavePattern && (
+                    <span className="text-xs font-mono bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 px-2 py-0.5 rounded">
+                      Elliott: {sig.elliottWavePattern}
+                    </span>
+                  )}
                   <span className="text-xs font-mono bg-slate-800 border border-slate-700 text-slate-200 px-2 py-0.5 rounded">
                     {sig.smcPattern}
                   </span>
@@ -244,6 +262,14 @@ export const SignalsFeed: React.FC<SignalsFeedProps> = ({
                     Score: {sig.confluenceScore}/100
                   </span>
                 </div>
+
+                {/* Skip Reason Notice if applicable */}
+                {sig.skipReason && (
+                  <div className="mt-2 text-xs text-amber-300 bg-amber-950/40 border border-amber-500/30 rounded p-2 font-mono flex items-center gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>{sig.skipReason}</span>
+                  </div>
+                )}
 
                 {/* Gemini Reasoning Text */}
                 {sig.geminiReasoning && (

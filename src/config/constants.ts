@@ -18,8 +18,7 @@ export const CONFIG = {
 
   // Google Gemini API Key
   GEMINI_API_KEY:
-    process.env.GEMINI_API_KEY ||
-    'AIzaSyDzKu_uePRj_0VPUpD21LHRflY7_o_dPgk',
+    process.env.GEMINI_API_KEY || '',
 
   // Binance Futures Production Credentials
   BINANCE_API_KEY:
@@ -27,7 +26,6 @@ export const CONFIG = {
     'MXFNZcJLg23OFN1JtKE5v0OOlNaNXnhmcFf6XNxMdGZnix6E5rU99YEgRDZDLaOj',
   BINANCE_SECRET_KEY:
     process.env.BINANCE_SECRET_KEY ||
-    process.env.BINANCE_API_SECRET ||
     'TGeZ9tGjg8ILSCw65FOlRFC6xVuSmI5CMaWUUZGoLZ8vYLVc7w2fqWgC1ek7xFNI',
   BINANCE_TESTNET:
     process.env.BINANCE_TESTNET === 'true' ? true : false,
